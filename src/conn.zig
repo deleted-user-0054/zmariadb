@@ -1,7 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+const auth = @import("./auth.zig");
 const Config = @import("./config.zig").Config;
 const constants = @import("./constants.zig");
-const auth = @import("./auth.zig");
 const protocol = @import("./protocol.zig");
 const HandshakeV10 = protocol.handshake_v10.HandshakeV10;
 const ErrorPacket = protocol.generic_response.ErrorPacket;
@@ -45,7 +47,14 @@ pub const Conn = struct {
         var conn: Conn = blk: {
             const stream = switch (config.address.any.family) {
                 std.posix.AF.INET, std.posix.AF.INET6 => try std.net.tcpConnectToAddress(config.address),
-                std.posix.AF.UNIX => try std.net.connectUnixSocket(std.mem.span(@as([*:0]const u8, @ptrCast(&config.address.un.path)))),
+                std.posix.AF.UNIX => unixBlk: {
+                    // https://github.com/speed2exe/myzql/issues/37
+                    if (builtin.os.tag == .windows) {
+                        break :unixBlk try std.net.tcpConnectToAddress(config.address);
+                    } else {
+                        break :unixBlk try std.net.connectUnixSocket(std.mem.span(@as([*:0]const u8, @ptrCast(&config.address.un.path))));
+                    }
+                },
                 else => unreachable,
             };
             break :blk .{
