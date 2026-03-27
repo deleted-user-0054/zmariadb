@@ -11,6 +11,8 @@ const ColumnDefinition41 = protocol.column_definition.ColumnDefinition41;
 const Conn = @import("./conn.zig").Conn;
 const conversion = @import("./conversion.zig");
 
+/// Result of a query that does not return rows.
+/// Use `.expect(.ok)` to get the `OkPacket`, or `.expect(.err)` to get the `ErrorPacket`.
 pub const QueryResult = union(enum) {
     ok: OkPacket,
     err: ErrorPacket,
@@ -31,6 +33,8 @@ pub const QueryResult = union(enum) {
         };
     }
 
+    /// Unwrap the result to the given variant, returning an error if it does not match.
+    /// If the result is `.err`, the error packet's message is logged and returned as a Zig error.
     pub fn expect(
         q: QueryResult,
         comptime value_variant: std.meta.FieldEnum(QueryResult),
@@ -50,9 +54,9 @@ pub const QueryResult = union(enum) {
     }
 };
 
-/// T is either:
-/// - TextResultRow (queryRows)
-/// - BinaryResultRow (executeRows)
+/// Result of a query that returns rows (from `Conn.queryRows` or `Conn.executeRows`).
+/// T is either `TextResultRow` (from `queryRows`) or `BinaryResultRow` (from `executeRows`).
+/// Use `.expect(.rows)` to get the `ResultSet(T)`, or `.expect(.err)` to get the `ErrorPacket`.
 pub fn QueryResultRows(comptime T: type) type {
     return union(enum) {
         err: ErrorPacket,
@@ -75,11 +79,14 @@ pub fn QueryResultRows(comptime T: type) type {
             };
         }
 
-        /// Example (TextResultRow):
-        /// ...
-        /// const result: QueryResultRows(TextResultRow) = try conn.queryRows("SELECT * FROM table");
+        /// Unwrap the result to the given variant, returning an error if it does not match.
+        /// If the result is `.err`, the error packet's message is logged and returned as a Zig error.
+        ///
+        /// Example:
+        /// ```zig
+        /// const result: QueryResultRows(TextResultRow) = try conn.queryRows(allocator, "SELECT * FROM table");
         /// const rows: ResultSet(TextResultRow) = try result.expect(.rows);
-        /// ...
+        /// ```
         pub fn expect(
             q: QueryResultRows(T),
             comptime value_variant: std.meta.FieldEnum(QueryResultRows(T)),
@@ -100,9 +107,10 @@ pub fn QueryResultRows(comptime T: type) type {
     };
 }
 
-/// T is either:
-/// - TextResultRow (queryRows)
-/// - BinaryResultRow (executeRows)
+/// A result set returned by a query that produces rows.
+/// T is either `TextResultRow` (from `queryRows`) or `BinaryResultRow` (from `executeRows`).
+/// Use `iter()` to iterate over rows, `first()` to get only the first row,
+/// or `tableTexts()` / `tableStructs()` (via the iterator) to collect all rows at once.
 pub fn ResultSet(comptime T: type) type {
     return struct {
         conn: *Conn,
@@ -133,12 +141,16 @@ pub fn ResultSet(comptime T: type) type {
             return ResultRow(T).init(r.conn, r.col_defs);
         }
 
+        /// Collect all text result rows into a `TableTexts` struct.
+        /// Allocates memory; caller must call `deinit` on the returned value.
         pub fn tableTexts(r: *ResultSet(TextResultRow), allocator: std.mem.Allocator) !TableTexts {
             var all_rows = try collectAllRowsPacketUntilEof(r.conn, allocator);
             errdefer deinitOwnedPacketList(allocator, &all_rows);
             return try TableTexts.init(all_rows, allocator, r.col_defs.len);
         }
 
+        /// Return the first row of the result set, draining remaining rows.
+        /// Returns `null` if the result set is empty.
         pub fn first(r: *const ResultSet(T)) !?T {
             const row_res = try r.readRow();
             return switch (row_res) {
@@ -152,12 +164,18 @@ pub fn ResultSet(comptime T: type) type {
             };
         }
 
+        /// Return an iterator over the rows in this result set.
+        /// Note: rows are read from the network; the iterator can only be used once.
+        /// All rows must be consumed (iterated to `null`) before issuing another query.
         pub fn iter(r: *const ResultSet(T)) ResultRowIter(T) {
             return .{ .result_set = r };
         }
     };
 }
 
+/// A single row returned by a text protocol query (`Conn.queryRows`).
+/// Use `iter()` to iterate over raw text elements,
+/// or `textElems()` to collect all elements into an allocated slice.
 pub const TextResultRow = struct {
     packet: Packet,
     col_defs: []const ColumnDefinition41,
@@ -220,29 +238,32 @@ fn scanTextResultRow(dest: []?[]const u8, packet: *const Packet) void {
     }
 }
 
+/// A single row returned by a binary protocol query (`Conn.executeRows`).
+/// Use `scan` to scan row values into an existing struct,
+/// or `structCreate` to allocate a new struct (must be freed with `structDestroy`).
 pub const BinaryResultRow = struct {
     packet: Packet,
     col_defs: []const ColumnDefinition41,
 
-    // dest: pointer to a struct
-    // string types like []u8, []const u8, ?[]u8 are shallow copied, data may be invalidated
-    // from next scan, or network request.
-    // use structCreate and structDestroy to allocate and deallocate struct objects
-    // from binary result values
+    /// Scan the row into the struct pointed to by `dest`.
+    /// String fields (`[]u8`, `[]const u8`) are shallow-copied and point into the row's
+    /// internal buffer, which is invalidated on the next `scan` call or network request.
+    /// Use `structCreate` if you need the data to outlive the current row.
     pub fn scan(b: *const BinaryResultRow, dest: anytype) !void {
         try conversion.scanBinResultRow(dest, &b.packet, b.col_defs, null);
     }
 
-    // returns a pointer to allocated struct object, caller must remember to call structDestroy
-    // after use
+    /// Allocate a new struct of type `Struct` and scan the row values into it.
+    /// String fields are heap-allocated and owned by the returned struct.
+    /// The caller must call `structDestroy` to free the struct and any owned strings.
     pub fn structCreate(b: *const BinaryResultRow, comptime Struct: type, allocator: std.mem.Allocator) !*Struct {
         const s = try allocator.create(Struct);
         try conversion.scanBinResultRow(s, &b.packet, b.col_defs, allocator);
         return s;
     }
 
-    // deallocate struct object created from `structCreate`
-    // s: *Struct
+    /// Free a struct allocated by `structCreate`, including any owned string fields.
+    /// `s` must be a pointer to the struct returned by `structCreate`.
     pub fn structDestroy(s: anytype, allocator: std.mem.Allocator) void {
         structFreeDynamic(s.*, allocator);
         allocator.destroy(s);
@@ -337,6 +358,9 @@ fn collectAllRowsPacketUntilEof(conn: *Conn, allocator: std.mem.Allocator) !std.
     }
 }
 
+/// Result of `Conn.prepare`. Use `.expect(.stmt)` to get the `PreparedStatement`,
+/// or `.expect(.err)` to get the `ErrorPacket`.
+/// The caller must call `deinit` to free resources associated with a successful prepare.
 pub const PrepareResult = union(enum) {
     err: ErrorPacket,
     stmt: PreparedStatement,
@@ -350,6 +374,8 @@ pub const PrepareResult = union(enum) {
         };
     }
 
+    /// Free resources held by this `PrepareResult`.
+    /// Must be called when the prepare result is no longer needed.
     pub fn deinit(p: *const PrepareResult, allocator: std.mem.Allocator) void {
         switch (p.*) {
             .stmt => |prep_stmt| prep_stmt.deinit(allocator),
@@ -357,6 +383,8 @@ pub const PrepareResult = union(enum) {
         }
     }
 
+    /// Unwrap the result to the given variant, returning an error if it does not match.
+    /// If the result is `.err`, the error packet's message is logged and returned as a Zig error.
     pub fn expect(
         p: PrepareResult,
         comptime value_variant: std.meta.FieldEnum(PrepareResult),
@@ -376,12 +404,17 @@ pub const PrepareResult = union(enum) {
     }
 };
 
+/// A prepared statement returned by `Conn.prepare`.
+/// Pass a pointer to this to `Conn.execute` or `Conn.executeRows` to run the query.
+/// Resources are freed when `PrepareResult.deinit` is called.
 pub const PreparedStatement = struct {
     prep_ok: PrepareOk,
     packets: []const Packet,
     col_defs: []const ColumnDefinition41,
-    params: []const ColumnDefinition41, // parameters that would be passed when executing the query
-    res_cols: []const ColumnDefinition41, // columns that would be returned when executing the query
+    /// Parameter column definitions (corresponding to `?` placeholders in the query).
+    params: []const ColumnDefinition41,
+    /// Result column definitions (columns returned by the query).
+    res_cols: []const ColumnDefinition41,
 
     pub fn init(ok_packet: *const Packet, conn: *Conn, allocator: std.mem.Allocator) !PreparedStatement {
         const prep_ok = PrepareOk.init(ok_packet, conn.capabilities);
@@ -423,10 +456,16 @@ pub const PreparedStatement = struct {
     }
 };
 
+/// An iterator over rows in a `ResultSet`.
+/// T is either `TextResultRow` or `BinaryResultRow`.
+/// Rows are read from the network on each call to `next()`.
+/// All rows must be consumed before issuing another query on the same connection.
 pub fn ResultRowIter(comptime T: type) type {
     return struct {
         result_set: *const ResultSet(T),
 
+        /// Advance the iterator and return the next row, or `null` at end-of-results.
+        /// Returns an error if the server sends an error packet.
         pub fn next(iter: *const ResultRowIter(T)) !?T {
             const row_res = try iter.result_set.readRow();
             return switch (row_res) {
@@ -436,12 +475,19 @@ pub fn ResultRowIter(comptime T: type) type {
             };
         }
 
+        /// Collect all remaining rows into a `TableStructs(Struct)`.
+        /// Allocates memory; caller must call `deinit` on the returned value.
+        /// Only available when T is `BinaryResultRow`.
         pub fn tableStructs(iter: *const ResultRowIter(BinaryResultRow), comptime Struct: type, allocator: std.mem.Allocator) !TableStructs(Struct) {
             return TableStructs(Struct).init(iter, allocator);
         }
     };
 }
 
+/// A collection of all text result rows from a query, held in memory.
+/// Obtained via `ResultSet(TextResultRow).tableTexts(allocator)`.
+/// The `table` field is a slice of rows, each row being a slice of nullable strings.
+/// Call `deinit` to free all memory.
 pub const TableTexts = struct {
     packet_list: std.ArrayList(Packet),
 
@@ -488,6 +534,10 @@ pub const TableTexts = struct {
     }
 };
 
+/// A collection of all binary result rows scanned into structs of type `Struct`.
+/// Obtained via `ResultRowIter(BinaryResultRow).tableStructs(Struct, allocator)`.
+/// The `struct_list` field is a list of all rows as `Struct` values.
+/// Call `deinit` to free all memory, including any heap-allocated string fields within structs.
 pub fn TableStructs(comptime Struct: type) type {
     return struct {
         struct_list: std.ArrayList(Struct),

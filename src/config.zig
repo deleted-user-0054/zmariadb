@@ -1,16 +1,23 @@
 const std = @import("std");
 const constants = @import("./constants.zig");
 
+/// Configuration for a MySQL/MariaDB connection.
 pub const Config = struct {
+    /// MySQL username. Default: "root"
     username: [:0]const u8 = "root",
+    /// Server address. Default: 127.0.0.1:3306
     address: std.net.Address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 3306),
+    /// MySQL password. Default: ""
     password: []const u8 = "",
+    /// Default database to use. Default: ""
     database: [:0]const u8 = "",
     collation: u8 = constants.utf8mb4_general_ci,
 
-    // cfgs from Golang driver
-    client_found_rows: bool = false, // Return number of matching rows instead of rows changed
+    /// Return number of matching rows instead of rows changed. Default: false
+    client_found_rows: bool = false,
+    /// Enable SSL. Default: false
     ssl: bool = false,
+    /// Allow multiple statements in a single query. Default: false
     multi_statements: bool = false,
 
     pub fn capability_flags(config: *const Config) u32 {
