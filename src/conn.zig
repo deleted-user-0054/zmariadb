@@ -31,6 +31,9 @@ const max_packet_size = 1 << 24 - 1;
 // TODO: make this adjustable during compile time
 const buffer_size: usize = 4096;
 
+/// A MySQL/MariaDB connection.
+/// Use `init` to establish a connection, and `deinit` to close it.
+/// A single `Conn` must not be used concurrently from multiple threads.
 pub const Conn = struct {
     connected: bool,
     stream: std.net.Stream,
@@ -43,6 +46,9 @@ pub const Conn = struct {
     result_meta: ResultMeta,
 
     // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase.html
+    /// Establish a connection to a MySQL/MariaDB server.
+    /// Performs the TCP connection and authentication handshake.
+    /// Caller must call `deinit` when done.
     pub fn init(allocator: std.mem.Allocator, config: *const Config) !Conn {
         var conn: Conn = blk: {
             const stream = switch (config.address.any.family) {
@@ -104,6 +110,8 @@ pub const Conn = struct {
         return conn;
     }
 
+    /// Close the connection and free resources.
+    /// Sends a COM_QUIT packet to the server before closing.
     pub fn deinit(c: *Conn, allocator: std.mem.Allocator) void {
         c.quit() catch |err| {
             std.log.err("Failed to quit: {any}\n", .{err});
@@ -114,6 +122,7 @@ pub const Conn = struct {
         c.result_meta.deinit(allocator);
     }
 
+    /// Send a ping to the server to verify the connection is alive.
     pub fn ping(c: *Conn) !void {
         c.ready();
         try c.writeBytesAsPacket(&[_]u8{constants.COM_PING});
@@ -126,6 +135,9 @@ pub const Conn = struct {
         }
     }
 
+    /// Execute a text query that does not return rows (e.g. CREATE, INSERT, UPDATE, DELETE).
+    /// Returns `QueryResult` which is either `.ok` (OkPacket) or `.err` (ErrorPacket).
+    /// Use `queryRows` instead if your query returns a result set.
     // query that doesn't return any rows
     pub fn query(c: *Conn, query_string: []const u8) !QueryResult {
         c.ready();
@@ -136,6 +148,9 @@ pub const Conn = struct {
         return c.queryResult(&packet);
     }
 
+    /// Execute a text query that returns rows (e.g. SELECT).
+    /// Returns `QueryResultRows(TextResultRow)` which is either `.rows` (ResultSet) or `.err` (ErrorPacket).
+    /// Use `query` instead if your query does not return a result set.
     // query that expect rows, even if it returns 0 rows
     pub fn queryRows(c: *Conn, allocator: std.mem.Allocator, query_string: []const u8) !QueryResultRows(TextResultRow) {
         c.ready();
@@ -145,6 +160,9 @@ pub const Conn = struct {
         return QueryResultRows(TextResultRow).init(c, allocator);
     }
 
+    /// Prepare a SQL statement for execution.
+    /// Returns `PrepareResult` which is either `.stmt` (PreparedStatement) or `.err` (ErrorPacket).
+    /// The caller must call `deinit` on the returned `PrepareResult` to free resources.
     pub fn prepare(c: *Conn, allocator: std.mem.Allocator, query_string: []const u8) !PrepareResult {
         c.ready();
         const prepare_request: PrepareRequest = .{ .query = query_string };
@@ -153,6 +171,10 @@ pub const Conn = struct {
         return PrepareResult.init(c, allocator);
     }
 
+    /// Execute a prepared statement that does not return rows (e.g. INSERT, UPDATE, DELETE).
+    /// `params` must be a tuple whose fields correspond to the `?` placeholders in the query.
+    /// Returns `QueryResult` which is either `.ok` (OkPacket) or `.err` (ErrorPacket).
+    /// Use `executeRows` instead if your query returns a result set.
     // execute a prepared statement that doesn't return any rows
     pub fn execute(c: *Conn, prep_stmt: *const PreparedStatement, params: anytype) !QueryResult {
         c.ready();
@@ -168,6 +190,10 @@ pub const Conn = struct {
         return c.queryResult(&packet);
     }
 
+    /// Execute a prepared statement that returns rows (e.g. SELECT).
+    /// `params` must be a tuple whose fields correspond to the `?` placeholders in the query.
+    /// Returns `QueryResultRows(BinaryResultRow)` which is either `.rows` (ResultSet) or `.err` (ErrorPacket).
+    /// Use `execute` instead if your query does not return a result set.
     // execute a prepared statement that expect rows, even if it returns 0 rows
     pub fn executeRows(c: *Conn, allocator: std.mem.Allocator, prep_stmt: *const PreparedStatement, params: anytype) !QueryResultRows(BinaryResultRow) {
         c.ready();

@@ -54,7 +54,7 @@ or
     //...
     const myzql_dep = b.dependency("myzql", .{});
     const myzql = myzql_dep.module("myzql");
-    exe.addModule("myzql", myzql);
+    exe.root_module.addImport("myzql", myzql);
     //...
 ```
 
@@ -81,7 +81,7 @@ pub fn main() !void {
             // ...
         },
     );
-    defer client.deinit();
+    defer client.deinit(allocator);
 
     // Connection and Authentication
     try client.ping();
@@ -124,49 +124,45 @@ pub fn main() !void {
 this is not the section, scroll down to "Executing prepared statements returning results" instead.
 ```zig
 const myzql = @import("myzql");
-const QueryResult = myzql.result.QueryResult;
 const ResultSet = myzql.result.ResultSet;
-const ResultRow = myzql.result.ResultRow;
-const TextResultRow = myzql.result.TextResultData;
-const ResultSetIter = myzql.result.ResultSetIter;
-const TableTexts = myzql.result.TableTexts;
+const TextResultRow = myzql.result.TextResultRow;
+const TextElems = myzql.result.TextElems;
 const TextElemIter = myzql.result.TextElemIter;
 
 pub fn main() !void {
-    const result = try c.queryRows("SELECT * FROM customers.purchases");
+    const result = try c.queryRows(allocator, "SELECT * FROM customers.purchases");
 
     // This is a query that returns rows, you have to collect the result.
     // you can use `expect(.rows)` to try interpret query result as ResultSet(TextResultRow)
-    const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+    const rows: ResultSet(TextResultRow) = try result.expect(.rows);
 
-    // Allocation free interators
-    const rows_iter: ResultRowIter(TextResultRow) = rows.iter();
-    { // Option 1: Iterate through every row and elem
-        while (try rows_iter.next()) |row| { // ResultRow(TextResultRow)
-            var elems_iter: TextElemIter = row.iter();
-            while (elems_iter.next()) |elem| { // ?[] const u8
-                std.debug.print("{?s} ", .{elem});
-            }
+    // Allocation-free iterator over rows
+    const rows_iter = rows.iter();
+    while (try rows_iter.next()) |row| { // TextResultRow
+        // Option 1: Iterate through every element in the row
+        var elems_iter: TextElemIter = row.iter();
+        while (elems_iter.next()) |elem| { // ?[]const u8
+            std.debug.print("{?s} ", .{elem});
         }
-    }
-    { // Option 2: Iterating over rows, collecting elements into []const ?[]const u8
-        while (try rows_iter.next()) |row| {
-            const text_elems: TextElems = try row.textElems(allocator);
-            defer text_elems.deinit(allocator); // elems are valid until deinit is called
-            const elems: []const ?[]const u8 = text_elems.elems;
-            std.debug.print("elems: {any}\n", .{elems});
-        }
-    }
 
-    // You can also use `collectTexts` method to collect all rows.
-    // Under the hood, it does network call and allocations, until EOF or error
+        // Option 2: Collect all elements in the row into a slice
+        const text_elems: TextElems = try row.textElems(allocator);
+        defer text_elems.deinit(allocator); // elems are valid until deinit is called
+        const elems: []const ?[]const u8 = text_elems.elems;
+        std.debug.print("elems: {any}\n", .{elems});
+    }
+}
+```
+
+```zig
+    // You can also use `tableTexts` to collect all rows at once.
+    // Under the hood, it does network calls and allocations, until EOF or error.
     // Results are valid until `deinit` is called on TableTexts.
-    const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+    const result = try c.queryRows(allocator, "SELECT * FROM customers.purchases");
+    const rows: ResultSet(TextResultRow) = try result.expect(.rows);
     const table = try rows.tableTexts(allocator);
     defer table.deinit(allocator); // table is valid until deinit is called
     std.debug.print("table: {any}\n", .{table.table});
-}
-
 ```
 
 ### Data Insertion
@@ -211,10 +207,8 @@ pub fn main() void {
 
 ### Executing prepared statements returning results as structs
 ```zig
-const ResultSetIter = myzql.result.ResultSetIter;
-const QueryResult = myzql.result.QueryResult;
+const QueryResultRows = myzql.result.QueryResultRows;
 const BinaryResultRow = myzql.result.BinaryResultRow;
-const TableStructs = myzql.result.TableStructs;
 const ResultSet = myzql.result.ResultSet;
 
 fn main() !void {
@@ -228,13 +222,8 @@ fn main() !void {
         age: u8,
     };
 
-    // Execute query and get an iterator from results
-    const res: QueryResult(BinaryResultRow) = try c.executeRows(&prep_stmt, .{});
-    const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
-    const iter: ResultSetIter(BinaryResultRow) = rows.iter();
-
     { // Iterating over rows, scanning into struct or creating struct
-        const query_res = try c.executeRows(&prep_stmt, .{}); // no parameters because there's no ? in the query
+        const query_res = try c.executeRows(allocator, &prep_stmt, .{}); // no parameters because there's no ? in the query
         const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
         const rows_iter = rows.iter();
         while (try rows_iter.next()) |row| {
@@ -260,7 +249,7 @@ fn main() !void {
     }
 
     { // collect all rows into a table ([]const Person)
-        const query_res = try c.executeRows(&prep_stmt, .{}); // no parameters because there's no ? in the query
+        const query_res = try c.executeRows(allocator, &prep_stmt, .{}); // no parameters because there's no ? in the query
         const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
         const rows_iter = rows.iter();
         const person_structs = try rows_iter.tableStructs(Person, allocator);
@@ -323,13 +312,13 @@ fn main() !void {
         const prep_res = try c.prepare(allocator, "SELECT * FROM test.temporal_types_example");
         defer prep_res.deinit(allocator);
         const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
-        const res = try c.executeRows(&prep_stmt, .{});
+        const res = try c.executeRows(allocator, &prep_stmt, .{});
         const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const structs = try rows_iter.tableStructs(DateTimeDuration, allocator);
         defer structs.deinit(allocator);
-        std.debug.print("structs: {any}\n", .{structs.struct_list.items}); // structs.rows: []const DateTimeDuration
+        std.debug.print("structs: {any}\n", .{structs.struct_list.items}); // structs.struct_list.items: []const DateTimeDuration
         // Do something with structs
     }
 }
@@ -369,13 +358,13 @@ fn main() !void {
         const prep_res = try c.prepare(allocator, "SELECT * FROM test.array_types_example");
         defer prep_res.deinit(allocator);
         const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
-        const res = try c.executeRows(&prep_stmt, .{});
+        const res = try c.executeRows(allocator, &prep_stmt, .{});
         const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
         const rows_iter = rows.iter();
 
-        const structs = try rows_iter.tableStructs(DateTimeDuration, allocator);
+        const structs = try rows_iter.tableStructs(Client, allocator);
         defer structs.deinit(allocator);
-        std.debug.print("structs: {any}\n", .{structs.struct_list.items}); // structs.rows: []const Client
+        std.debug.print("structs: {any}\n", .{structs.struct_list.items}); // structs.struct_list.items: []const Client
         // Do something with structs
     }
 }
@@ -385,20 +374,21 @@ fn main() !void {
 - Insufficiently sized arrays will silently truncate excess data
 
 ## Unit Tests
-- `zig test src/myzql.zig`
+- `zig build unit_test`
 
 ## Integration Tests
 - Start up mysql/mariadb in docker:
 ```bash
 # MySQL
 docker run --name some-mysql --env MYSQL_ROOT_PASSWORD=password -p 3306:3306 -d mysql
+```
 ```bash
 # MariaDB
 docker run --name some-mariadb --env MARIADB_ROOT_PASSWORD=password -p 3306:3306 -d mariadb
 ```
 - Run all the test: In root directory of project:
 ```bash
-zig build -Dtest-filer='...' integration_test
+zig build -Dtest-filter="..." integration_test
 ```
 
 ## Philosophy
