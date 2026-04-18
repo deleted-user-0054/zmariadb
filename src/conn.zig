@@ -105,10 +105,15 @@ pub const Conn = struct {
     /// Close the connection and free resources.
     /// Sends a COM_QUIT packet to the server before closing.
     pub fn deinit(c: *Conn, allocator: std.mem.Allocator) void {
-        c.quit() catch |err| {
-            std.log.err("Failed to quit: {any}\n", .{err});
-        };
-        c.stream.close(std.Io.Threaded.global_single_threaded.io());
+        if (c.connected) {
+            c.quit() catch |err| {
+                std.log.err("Failed to quit: {any}\n", .{err});
+            };
+        }
+        if (c.connected) {
+            c.stream.close(std.Io.Threaded.global_single_threaded.io());
+            c.connected = false;
+        }
         c.reader.deinit();
         c.writer.deinit();
         c.result_meta.deinit(allocator);
@@ -149,7 +154,7 @@ pub const Conn = struct {
         const query_req: QueryRequest = .{ .query = query_string };
         try c.writePacket(query_req);
         try c.writer.flush();
-        return QueryResultRows(TextResultRow).init(c, allocator);
+        return c.queryRowsResult(TextResultRow, allocator);
     }
 
     /// Prepare a SQL statement for execution.
@@ -197,7 +202,7 @@ pub const Conn = struct {
         };
         try c.writePacketWithParam(execute_request, params);
         try c.writer.flush();
-        return QueryResultRows(BinaryResultRow).init(c, allocator);
+        return c.queryRowsResult(BinaryResultRow, allocator);
     }
 
     fn quit(c: *Conn) !void {
@@ -332,14 +337,29 @@ pub const Conn = struct {
     inline fn queryResult(c: *Conn, packet: *const Packet) !QueryResult {
         const res = QueryResult.init(packet, c.capabilities) catch |err| {
             switch (err) {
-                error.UnrecoverableError => {
-                    c.stream.close(std.Io.Threaded.global_single_threaded.io());
-                    c.connected = false;
+                error.UnrecoverableError, error.UnsupportedLocalInfileRequest => {
+                    c.closeDueToFatalProtocolError();
                     return err;
                 },
             }
         };
         return res;
+    }
+
+    inline fn queryRowsResult(c: *Conn, comptime T: type, allocator: std.mem.Allocator) !QueryResultRows(T) {
+        return QueryResultRows(T).init(c, allocator) catch |err| switch (err) {
+            error.UnsupportedLocalInfileRequest => {
+                c.closeDueToFatalProtocolError();
+                return err;
+            },
+            else => return err,
+        };
+    }
+
+    inline fn closeDueToFatalProtocolError(c: *Conn) void {
+        if (!c.connected) return;
+        c.stream.close(std.Io.Threaded.global_single_threaded.io());
+        c.connected = false;
     }
 
     inline fn ready(c: *Conn) void {

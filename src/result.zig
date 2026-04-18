@@ -21,7 +21,10 @@ pub const QueryResult = union(enum) {
         return switch (packet.payload[0]) {
             constants.OK => .{ .ok = OkPacket.init(packet, capabilities) },
             constants.ERR => .{ .err = ErrorPacket.init(packet) },
-            constants.LOCAL_INFILE_REQUEST => _ = @panic("not implemented"),
+            constants.LOCAL_INFILE_REQUEST => {
+                std.log.err("LOCAL INFILE requests are not supported", .{});
+                return error.UnsupportedLocalInfileRequest;
+            },
             else => {
                 std.log.warn(
                     \\Unexpected packet: {any}\n,
@@ -74,7 +77,10 @@ pub fn QueryResultRows(comptime T: type) type {
                     return packet.asError();
                 },
                 constants.ERR => .{ .err = ErrorPacket.init(&packet) },
-                constants.LOCAL_INFILE_REQUEST => _ = @panic("not implemented"),
+                constants.LOCAL_INFILE_REQUEST => {
+                    std.log.err("LOCAL INFILE requests are not supported", .{});
+                    return error.UnsupportedLocalInfileRequest;
+                },
                 else => .{ .rows = try ResultSet(T).init(c, allocator, &packet) },
             };
         }

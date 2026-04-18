@@ -32,7 +32,7 @@
 ## Add as dependency to your Zig project
 ### Fetch dependency
 ```bash
-zig fetch --save git+https://github.com/speed2exe/myzql#0.15.1
+zig fetch --save git+https://github.com/speed2exe/myzql#main
 ```
 or
 - `build.zig.zon`
@@ -95,7 +95,7 @@ const OkPacket = protocol.generic_response.OkPacket;
 pub fn main() !void {
     // ...
     // You can do a text query (text protocol) by using `query` method on `Conn`
-    const result = try c.query("CREATE DATABASE testdb");
+    const result = try client.query("CREATE DATABASE testdb");
 
     // Query results can have a few variant:
     // - ok:   OkPacket     => query is ok
@@ -229,7 +229,7 @@ fn main() !void {
             { // Option 1: scanning into preallocated person
                 var person: Person = undefined;
                 try row.scan(&person);
-                person.greet();
+                std.debug.print("person: {any}\n", .{person});
                 // Important: if any field is a string, it will be valid until the next row is scanned
                 // or next query. If your rows return have strings and you want to keep the data longer,
                 // use the method below instead.
@@ -242,7 +242,7 @@ fn main() !void {
                 // if your struct contains strings.
                 // person is valid until BinaryResultRow.structDestroy is called.
                 defer BinaryResultRow.structDestroy(person_ptr, allocator);
-                person_ptr.greet();
+                std.debug.print("person: {any}\n", .{person_ptr.*});
             }
         }
     }
@@ -296,7 +296,9 @@ fn main() !void {
             .seconds = 59,
             .microseconds = 123456,
         };
-        const params = .{.{ my_time, my_duration }};
+        const params = .{
+            .{ my_time, my_duration },
+        };
         inline for (params) |param| {
             const exe_res = try c.execute(&prep_stmt, param);
             _ = try exe_res.expect(.ok);

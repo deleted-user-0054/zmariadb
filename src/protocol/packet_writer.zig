@@ -22,11 +22,6 @@ pub const PacketWriter = struct {
         w.allocator.free(w.buf);
     }
 
-    // invalidates all previous writes
-    pub fn reset(w: *PacketWriter) void {
-        w.pos = 0;
-    }
-
     pub fn write(w: *PacketWriter, src: []const u8) !void {
         try w.expandIfNeeded(src.len);
         const n = utils.copy(w.buf[w.pos..], src);
@@ -111,10 +106,6 @@ pub const PacketWriter = struct {
 
     pub fn writeNullTerminatedString(p: *PacketWriter, v: [:0]const u8) !void {
         try p.write(v[0 .. v.len + 1]);
-    }
-
-    pub fn writeFillers(p: *PacketWriter, comptime n: comptime_int) !void {
-        _ = try p.advance(n);
     }
 
     pub fn writeLengthEncodedString(p: *PacketWriter, s: []const u8) !void {
