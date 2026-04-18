@@ -11,7 +11,7 @@
 | 0.13.2      | 0.13.0                    |
 | 0.14.0      | 0.14.0                    |
 | 0.15.1      | 0.15.1                    |
-| main        | 0.15.1                    |
+| main        | 0.16.0                    |
 
 ## Features
 - Native Zig code, no external dependencies
@@ -76,8 +76,7 @@ pub fn main() !void {
             .database = "customers",   // default: ""
 
             // Current default value.
-            // Use std.net.getAddressList if you need to look up ip based on hostname
-            .address =  std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 3306),
+            .address = myzql.config.Address.localhost(3306),
             // ...
         },
     );

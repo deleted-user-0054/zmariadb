@@ -122,7 +122,7 @@ test "prepare check" {
             },
             .err => |err| return err.asError(),
         }
-        try std.testing.expectEqual(c.reader.len, c.reader.pos);
+        try std.testing.expectEqual(@as(usize, 0), c.reader.reader.interface.bufferedLen());
     }
 }
 

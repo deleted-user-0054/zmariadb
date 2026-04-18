@@ -1,12 +1,21 @@
 const std = @import("std");
 const constants = @import("./constants.zig");
 
+pub const Address = union(enum) {
+    ip: std.Io.net.IpAddress,
+    unix: std.Io.net.UnixAddress,
+
+    pub fn localhost(port: u16) Address {
+        return .{ .ip = .{ .ip4 = .loopback(port) } };
+    }
+};
+
 /// Configuration for a MySQL/MariaDB connection.
 pub const Config = struct {
     /// MySQL username. Default: "root"
     username: [:0]const u8 = "root",
     /// Server address. Default: 127.0.0.1:3306
-    address: std.net.Address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 3306),
+    address: Address = Address.localhost(3306),
     /// MySQL password. Default: ""
     password: []const u8 = "",
     /// Default database to use. Default: ""

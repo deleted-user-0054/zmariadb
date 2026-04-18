@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const auth = @import("./auth.zig");
 const Config = @import("./config.zig").Config;
@@ -36,7 +35,7 @@ const buffer_size: usize = 4096;
 /// A single `Conn` must not be used concurrently from multiple threads.
 pub const Conn = struct {
     connected: bool,
-    stream: std.net.Stream,
+    stream: std.Io.net.Stream,
     reader: PacketReader,
     writer: PacketWriter,
     capabilities: u32,
@@ -50,24 +49,17 @@ pub const Conn = struct {
     /// Performs the TCP connection and authentication handshake.
     /// Caller must call `deinit` when done.
     pub fn init(allocator: std.mem.Allocator, config: *const Config) !Conn {
+        const io = std.Io.Threaded.global_single_threaded.io();
         var conn: Conn = blk: {
-            const stream = switch (config.address.any.family) {
-                std.posix.AF.INET, std.posix.AF.INET6 => try std.net.tcpConnectToAddress(config.address),
-                std.posix.AF.UNIX => unixBlk: {
-                    // https://github.com/speed2exe/myzql/issues/37
-                    if (builtin.os.tag == .windows) {
-                        break :unixBlk try std.net.tcpConnectToAddress(config.address);
-                    } else {
-                        break :unixBlk try std.net.connectUnixSocket(std.mem.span(@as([*:0]const u8, @ptrCast(&config.address.un.path))));
-                    }
-                },
-                else => unreachable,
+            const stream = switch (config.address) {
+                .ip => |address| try address.connect(io, .{ .mode = .stream }),
+                .unix => |address| try address.connect(io),
             };
             break :blk .{
                 .connected = true,
                 .stream = stream,
-                .reader = try PacketReader.init(stream, allocator),
-                .writer = try PacketWriter.init(stream, allocator),
+                .reader = try PacketReader.init(stream, io, allocator),
+                .writer = try PacketWriter.init(stream, io, allocator),
                 .capabilities = undefined, // not known until we get the first packet
                 .sequence_id = undefined, // not known until we get the first packet
 
@@ -116,7 +108,7 @@ pub const Conn = struct {
         c.quit() catch |err| {
             std.log.err("Failed to quit: {any}\n", .{err});
         };
-        c.stream.close();
+        c.stream.close(std.Io.Threaded.global_single_threaded.io());
         c.reader.deinit();
         c.writer.deinit();
         c.result_meta.deinit(allocator);
@@ -213,7 +205,7 @@ pub const Conn = struct {
         try c.writeBytesAsPacket(&[_]u8{constants.COM_QUIT});
         try c.writer.flush();
         const packet = c.readPacket() catch |err| switch (err) {
-            error.UnexpectedEndOfStream => {
+            error.EndOfStream => {
                 c.connected = false;
                 return;
             },
@@ -341,11 +333,10 @@ pub const Conn = struct {
         const res = QueryResult.init(packet, c.capabilities) catch |err| {
             switch (err) {
                 error.UnrecoverableError => {
-                    c.stream.close();
+                    c.stream.close(std.Io.Threaded.global_single_threaded.io());
                     c.connected = false;
                     return err;
                 },
-                else => return err,
             }
         };
         return res;
@@ -354,7 +345,7 @@ pub const Conn = struct {
     inline fn ready(c: *Conn) void {
         std.debug.assert(c.connected);
         std.debug.assert(c.writer.pos == 0);
-        std.debug.assert(c.reader.pos == c.reader.len);
+        std.debug.assert(c.reader.reader.interface.bufferedLen() == 0);
         c.sequence_id = 0;
     }
 };

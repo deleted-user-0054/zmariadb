@@ -559,12 +559,14 @@ pub fn TableStructs(comptime Struct: type) type {
         }
 
         pub fn debugPrint(t: *const TableStructs(Struct)) !void {
-            const w = std.io.getStdOut().writer();
+            var buffer: [1024]u8 = undefined;
+            var w = std.fs.File.stdout().writer(&buffer).interface;
             for (t.struct_list.items, 0..) |row, i| {
                 try w.print("row: {any} -> ", .{i});
                 try w.print("{any}", .{row});
                 try w.print("\n", .{});
             }
+            try w.flush();
         }
     };
 }

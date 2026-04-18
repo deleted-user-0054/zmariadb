@@ -85,10 +85,10 @@ pub fn nullBits(params: []const ?QueryParam) u8 {
 //     };
 //
 //     var buffer: [4]u8 = undefined;
-//     var fbs = std.io.fixedBufferStream(&buffer);
+//     var fbs = std.Io.Writer.fixed(&buffer);
 //     try writeNullBitmap(params, &fbs);
 //
-//     const written = fbs.buffer[0..fbs.pos];
+//     const written = fbs.buffered();
 //
 //     // TODO: not sure if this is the expected result
 //     // but it serves a good reference for now
@@ -104,10 +104,10 @@ pub fn nullBits(params: []const ?QueryParam) u8 {
 //     };
 //
 //     var buffer: [4]u8 = undefined;
-//     var fbs = std.io.fixedBufferStream(&buffer);
+//     var fbs = std.Io.Writer.fixed(&buffer);
 //     try writeNullBitmap(params, &fbs);
 //
-//     const written = fbs.buffer[0..fbs.pos];
+//     const written = fbs.buffered();
 //
 //     // TODO: not sure if this is the expected result
 //     // but it serves a good reference for now
