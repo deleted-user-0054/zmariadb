@@ -38,7 +38,6 @@ pub const CLIENT_LOCAL_FILES:     u32 = 128;
 pub const CLIENT_IGNORE_SPACE:    u32 = 256;
 pub const CLIENT_PROTOCOL_41:     u32 = 512;
 pub const CLIENT_INTERACTIVE:     u32 = 1024;
-pub const CLIENT_SSL:             u32 = 2048;
 pub const CLIENT_IGNORE_SIGPIPE:  u32 = 4096;
 pub const CLIENT_TRANSACTIONS:    u32 = 8192;
 pub const CLIENT_RESERVED:        u32 = 16384;
@@ -58,7 +57,6 @@ pub const CLIENT_ZSTD_COMPRESSION_ALGORITHM:     u32 = 1 << 26;
 pub const CLIENT_QUERY_ATTRIBUTES:               u32 = 1 << 27;
 pub const CTOR_AUTHENTICATION:                   u32 = 1 << 28;
 pub const CLIENT_CAPABILITY_EXTENSION:           u32 = 1 << 29;
-pub const CLIENT_SSL_VERIFY_SERVER_CERT:         u32 = 1 << 30;
 
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query.html
 pub const COM_QUERY:        u8 = 0x03;

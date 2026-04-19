@@ -85,8 +85,6 @@ pub const Conn = struct {
             break :blk .{ handshake_v10.get_auth_plugin(), handshake_v10.get_auth_data() };
         };
 
-        // TODO: TLS handshake if enabled
-
         // more auth exchange based on auth_method
         // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase_authentication_methods.html
         switch (auth_plugin) {
@@ -273,10 +271,6 @@ pub const Conn = struct {
                         auth.caching_sha2_password_fast_auth_success => {}, // success (do nothing, wait for next packet)
                         auth.caching_sha2_password_full_authentication_start => {
                             // Full Authentication start
-
-                            // TODO: support TLS
-                            // // if TLS, send password as plain text
-                            // try conn.sendBytesAsPacket(config.password);
 
                             try c.writeBytesAsPacket(&[_]u8{auth.caching_sha2_password_public_key_request});
                             try c.writer.flush();

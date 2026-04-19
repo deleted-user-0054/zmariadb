@@ -24,8 +24,6 @@ pub const Config = struct {
 
     /// Return number of matching rows instead of rows changed. Default: false
     client_found_rows: bool = false,
-    /// Enable SSL. Default: false
-    ssl: bool = false,
     /// Allow multiple statements in a single query. Default: false
     multi_statements: bool = false,
 
@@ -40,9 +38,6 @@ pub const Config = struct {
         // zig fmt: on
         if (config.client_found_rows) {
             flags |= constants.CLIENT_FOUND_ROWS;
-        }
-        if (config.ssl) {
-            flags |= constants.CLIENT_SSL;
         }
         if (config.multi_statements) {
             flags |= constants.CLIENT_MULTI_STATEMENTS;

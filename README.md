@@ -27,7 +27,6 @@
 ## TODOs
 - Config from URL
 - Connection Pooling
-- TLS support
 
 ## Add as dependency to your Zig project
 ### Fetch dependency
