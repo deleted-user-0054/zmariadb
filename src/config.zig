@@ -10,6 +10,11 @@ pub const Address = union(enum) {
     }
 };
 
+pub const ReconnectPolicy = struct {
+    enabled: bool = false,
+    max_attempts: u8 = 1,
+};
+
 /// Configuration for a MySQL/MariaDB connection.
 pub const Config = struct {
     /// MySQL username. Default: "root"
@@ -26,12 +31,15 @@ pub const Config = struct {
     client_found_rows: bool = false,
     /// Allow multiple statements in a single query. Default: false
     multi_statements: bool = false,
+    /// Reconnect dead sessions after a communication failure, before a later command. Default: disabled.
+    reconnect: ReconnectPolicy = .{},
 
     pub fn capability_flags(config: *const Config) u32 {
         // zig fmt: off
         var flags: u32 = constants.CLIENT_PROTOCOL_41
                        | constants.CLIENT_PLUGIN_AUTH
                        | constants.CLIENT_SECURE_CONNECTION
+                       | constants.CLIENT_TRANSACTIONS
                        | constants.CLIENT_DEPRECATE_EOF
                        // TODO: Support more
                        ;
@@ -46,5 +54,57 @@ pub const Config = struct {
             flags |= constants.CLIENT_CONNECT_WITH_DB;
         }
         return flags;
+    }
+};
+
+pub const OwnedConfig = struct {
+    username: [:0]u8,
+    address: Address,
+    password: []u8,
+    database: [:0]u8,
+    collation: u8,
+    client_found_rows: bool,
+    multi_statements: bool,
+    reconnect: ReconnectPolicy,
+
+    pub fn init(allocator: std.mem.Allocator, config: *const Config) !OwnedConfig {
+        const username = try allocator.dupeZ(u8, config.username);
+        errdefer allocator.free(username);
+
+        const password = try allocator.dupe(u8, config.password);
+        errdefer allocator.free(password);
+
+        const database = try allocator.dupeZ(u8, config.database);
+        errdefer allocator.free(database);
+
+        return .{
+            .username = username,
+            .address = config.address,
+            .password = password,
+            .database = database,
+            .collation = config.collation,
+            .client_found_rows = config.client_found_rows,
+            .multi_statements = config.multi_statements,
+            .reconnect = config.reconnect,
+        };
+    }
+
+    pub fn deinit(config: *OwnedConfig, allocator: std.mem.Allocator) void {
+        allocator.free(config.username);
+        allocator.free(config.password);
+        allocator.free(config.database);
+    }
+
+    pub fn view(config: *const OwnedConfig) Config {
+        return .{
+            .username = config.username,
+            .address = config.address,
+            .password = config.password,
+            .database = config.database,
+            .collation = config.collation,
+            .client_found_rows = config.client_found_rows,
+            .multi_statements = config.multi_statements,
+            .reconnect = config.reconnect,
+        };
     }
 };

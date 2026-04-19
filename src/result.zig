@@ -70,10 +70,12 @@ pub fn QueryResultRows(comptime T: type) type {
             const packet = try c.readPacket();
             return switch (packet.payload[0]) {
                 constants.OK => {
+                    const ok = OkPacket.init(&packet, c.capabilities);
+                    c.rememberOkPacket(ok);
                     std.log.warn(
                         \\Unexpected OkPacket: {any}\n,
                         \\If your query is not expecting a result set, use QueryResult instead.
-                    , .{OkPacket.init(&packet, c.capabilities)});
+                    , .{ok});
                     return packet.asError();
                 },
                 constants.ERR => .{ .err = ErrorPacket.init(&packet) },
@@ -153,6 +155,11 @@ pub fn ResultSet(comptime T: type) type {
             var all_rows = try collectAllRowsPacketUntilEof(r.conn, allocator);
             errdefer deinitOwnedPacketList(allocator, &all_rows);
             return try TableTexts.init(all_rows, allocator, r.col_defs.len);
+        }
+
+        pub fn drain(r: *const ResultSet(T)) !void {
+            const row_iter = r.iter();
+            while (try row_iter.next()) |_| {}
         }
 
         /// Return the first row of the result set, draining remaining rows.
@@ -305,8 +312,16 @@ pub fn ResultRow(comptime T: type) type {
         fn init(conn: *Conn, col_defs: []const ColumnDefinition41) !ResultRow(T) {
             const packet = try conn.readPacket();
             return switch (packet.payload[0]) {
-                constants.ERR => .{ .err = ErrorPacket.init(&packet) },
-                constants.EOF => .{ .ok = OkPacket.init(&packet, conn.capabilities) },
+                constants.ERR => blk: {
+                    conn.setActiveResultSet(false);
+                    break :blk .{ .err = ErrorPacket.init(&packet) };
+                },
+                constants.EOF => blk: {
+                    const ok = OkPacket.init(&packet, conn.capabilities);
+                    conn.rememberOkPacket(ok);
+                    conn.setActiveResultSet(false);
+                    break :blk .{ .ok = ok };
+                },
                 else => .{ .row = .{ .packet = packet, .col_defs = col_defs } },
             };
         }
@@ -352,7 +367,8 @@ fn collectAllRowsPacketUntilEof(conn: *Conn, allocator: std.mem.Allocator) !std.
         return switch (packet.payload[0]) {
             constants.ERR => ErrorPacket.init(&packet).asError(),
             constants.EOF => {
-                _ = OkPacket.init(&packet, conn.capabilities);
+                conn.rememberOkPacket(OkPacket.init(&packet, conn.capabilities));
+                conn.setActiveResultSet(false);
                 return packet_list;
             },
             else => {
@@ -414,6 +430,8 @@ pub const PrepareResult = union(enum) {
 /// Pass a pointer to this to `Conn.execute` or `Conn.executeRows` to run the query.
 /// Resources are freed when `PrepareResult.deinit` is called.
 pub const PreparedStatement = struct {
+    owner: *Conn,
+    generation: u64,
     prep_ok: PrepareOk,
     packets: []const Packet,
     col_defs: []const ColumnDefinition41,
@@ -445,6 +463,8 @@ pub const PreparedStatement = struct {
         }
 
         return .{
+            .owner = conn,
+            .generation = conn.currentGeneration(),
             .prep_ok = prep_ok,
             .packets = packets,
             .col_defs = col_defs,
@@ -453,7 +473,14 @@ pub const PreparedStatement = struct {
         };
     }
 
+    pub fn isValidFor(prep_stmt: *const PreparedStatement, conn: *const Conn) bool {
+        return prep_stmt.owner == conn and prep_stmt.generation == conn.currentGeneration() and conn.connected;
+    }
+
     fn deinit(prep_stmt: *const PreparedStatement, allocator: std.mem.Allocator) void {
+        if (prep_stmt.isValidFor(prep_stmt.owner)) {
+            prep_stmt.owner.closePreparedStatement(prep_stmt.prep_ok.statement_id) catch {};
+        }
         allocator.free(prep_stmt.col_defs);
         for (prep_stmt.packets) |packet| {
             packet.deinit(allocator);

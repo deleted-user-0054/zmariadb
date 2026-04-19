@@ -17,6 +17,7 @@ const TextResultRow = myzql.result.TextResultRow;
 const TextElemIter = myzql.result.TextElemIter;
 const TextElems = myzql.result.TextElems;
 const PreparedStatement = myzql.result.PreparedStatement;
+const Pool = myzql.pool.Pool;
 
 // convenient function for testing
 fn queryExpectOk(c: *Conn, query: []const u8) !void {
@@ -30,6 +31,27 @@ fn queryExpectOkLogError(c: *Conn, query: []const u8) void {
     };
 }
 
+fn querySingleU64(client: anytype, query: []const u8) !u64 {
+    const query_res = try client.queryRows(allocator, query);
+    const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+    const row = (try rows.first()) orelse return error.ExpectedRow;
+    const elems = try row.textElems(allocator);
+    defer elems.deinit(allocator);
+    return std.fmt.parseUnsigned(u64, elems.elems[0] orelse return error.ExpectedValue, 10);
+}
+
+fn querySingleOptionalText(client: anytype, query: []const u8) !?[]u8 {
+    const query_res = try client.queryRows(allocator, query);
+    const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+    const row = (try rows.first()) orelse return error.ExpectedRow;
+    const elems = try row.textElems(allocator);
+    defer elems.deinit(allocator);
+    if (elems.elems[0]) |value| {
+        return try allocator.dupe(u8, value);
+    }
+    return null;
+}
+
 test "ping" {
     var c = try Conn.init(std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
@@ -40,6 +62,78 @@ test "connect with database" {
     var c = try Conn.init(std.testing.allocator, &test_config_with_db);
     defer c.deinit(std.testing.allocator);
     try c.ping();
+}
+
+test "transaction commit and rollback" {
+    var c = try Conn.init(std.testing.allocator, &test_config_with_db);
+    defer c.deinit(std.testing.allocator);
+
+    try queryExpectOk(&c, "DROP TEMPORARY TABLE IF EXISTS myzql_tx_test");
+    try queryExpectOk(&c, "CREATE TEMPORARY TABLE myzql_tx_test (id INT)");
+
+    {
+        var tx = try c.begin();
+        defer tx.deinit();
+        const query_res = try tx.query("INSERT INTO myzql_tx_test VALUES (1)");
+        _ = try query_res.expect(.ok);
+        try tx.rollback();
+    }
+    try std.testing.expectEqual(@as(u64, 0), try querySingleU64(&c, "SELECT COUNT(*) FROM myzql_tx_test"));
+
+    {
+        var tx = try c.begin();
+        defer tx.deinit();
+        const query_res = try tx.query("INSERT INTO myzql_tx_test VALUES (2)");
+        _ = try query_res.expect(.ok);
+        try tx.commit();
+    }
+    try std.testing.expectEqual(@as(u64, 1), try querySingleU64(&c, "SELECT COUNT(*) FROM myzql_tx_test"));
+}
+
+test "pool resets session state on release" {
+    var pool = try Pool.init(std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .reset_on_release = true,
+    });
+    defer pool.deinit();
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        const query_res = try lease.query("SET @myzql_pool_var = 123");
+        _ = try query_res.expect(.ok);
+    }
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        const value = try querySingleOptionalText(&lease, "SELECT @myzql_pool_var");
+        defer if (value) |v| allocator.free(v);
+        try std.testing.expectEqual(@as(?[]u8, null), value);
+    }
+}
+
+test "reconnect before next command after disconnect" {
+    var reconnect_config = test_config_with_db;
+    reconnect_config.reconnect = .{ .enabled = true };
+
+    var victim = try Conn.init(std.testing.allocator, &reconnect_config);
+    defer victim.deinit(std.testing.allocator);
+
+    var killer = try Conn.init(std.testing.allocator, &test_config_with_db);
+    defer killer.deinit(std.testing.allocator);
+
+    const old_connection_id = try querySingleU64(&victim, "SELECT CONNECTION_ID()");
+    const kill_sql = try std.fmt.allocPrint(allocator, "KILL CONNECTION {d}", .{old_connection_id});
+    defer allocator.free(kill_sql);
+    try queryExpectOk(&killer, kill_sql);
+
+    _ = victim.ping() catch {};
+    try std.testing.expect(!victim.connected);
+
+    try victim.ping();
+    const new_connection_id = try querySingleU64(&victim, "SELECT CONNECTION_ID()");
+    try std.testing.expect(old_connection_id != new_connection_id);
 }
 
 test "query database create and drop" {
@@ -122,7 +216,7 @@ test "prepare check" {
             },
             .err => |err| return err.asError(),
         }
-        try std.testing.expectEqual(@as(usize, 0), c.reader.reader.interface.bufferedLen());
+        try std.testing.expectEqual(@as(usize, 0), c.reader.?.reader.interface.bufferedLen());
     }
 }
 

@@ -120,6 +120,7 @@ pub const COM_PING:             u8 = 0x0e;
 pub const COM_CHANGE_USER:      u8 = 0x11;
 pub const COM_RESET_CONNECTION: u8 = 0x1f;
 pub const COM_SET_OPTION:       u8 = 0x1a;
+pub const COM_STMT_CLOSE:       u8 = 0x19;
 
 // https://dev.mysql.com/doc/dev/mysql-server/latest/group__group__cs__column__definition__flags.html
 pub const NOT_NULL_FLAG:                  u16 = 1;

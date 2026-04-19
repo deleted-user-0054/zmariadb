@@ -16,6 +16,9 @@
 ## Features
 - Native Zig code, no external dependencies
 - TCP protocol
+- Transactions
+- Connection Pooling
+- Automatic reconnect for dead sessions after a communication failure, before a later command (not inside a lost transaction)
 - Prepared Statement
 - Structs from query result
 - Data insertion
@@ -26,7 +29,6 @@
 
 ## TODOs
 - Config from URL
-- Connection Pooling
 
 ## Add as dependency to your Zig project
 ### Fetch dependency
@@ -76,6 +78,7 @@ pub fn main() !void {
 
             // Current default value.
             .address = myzql.config.Address.localhost(3306),
+            .reconnect = .{ .enabled = true },
             // ...
         },
     );
@@ -85,6 +88,35 @@ pub fn main() !void {
     try client.ping();
 }
 ```
+
+### Transactions
+```zig
+var tx = try client.begin();
+defer tx.deinit();
+
+const query_res = try tx.query("INSERT INTO logs VALUES (1)");
+_ = try query_res.expect(.ok);
+try tx.commit();
+```
+
+### Connection Pooling
+```zig
+var pool = try myzql.pool.Pool.init(allocator, &.{
+    .username = "some-user",
+    .password = "password123",
+    .database = "customers",
+    .reconnect = .{ .enabled = true },
+}, .{ .max_connections = 8 });
+defer pool.deinit();
+
+var lease = try pool.acquire();
+defer lease.deinit();
+
+const query_res = try lease.queryRows(allocator, "SELECT 1");
+_ = try query_res.expect(.rows);
+```
+
+`Lease` owns the checked-out session lifetime. If you call `lease.begin()`, keep the `Tx` inside that lease scope and finish it before releasing the lease.
 
 ## Querying
 ```zig
@@ -107,7 +139,7 @@ pub fn main() !void {
 
     // Alternatively, you can also handle results manually for more control.
     // Here, we do a switch statement to handle all possible variant or results.
-    switch (result.value) {
+    switch (result) {
         .ok => |ok| {},
 
         // `asError` is also another convenient method to print message and return as zig error.
@@ -179,7 +211,7 @@ const QueryResult = myzql.result.QueryResult;
 const PreparedStatement = myzql.result.PreparedStatement;
 const OkPacket = myzql.protocol.generic_response.OkPacket;
 
-pub fn main() void {
+pub fn main() !void {
     // In order to do a insertion, you would first need to do a prepared statement.
     // Allocation is required as we need to store metadata of parameters and return type
     const prep_res = try c.prepare(allocator, "INSERT INTO test.person (name, age) VALUES (?, ?)");
