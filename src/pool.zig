@@ -23,13 +23,15 @@ const Entry = struct {
 };
 
 pub const Pool = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
     config: config_mod.OwnedConfig,
     options: PoolOptions,
     entries: std.ArrayList(Entry),
 
-    pub fn init(allocator: std.mem.Allocator, config: *const config_mod.Config, options: PoolOptions) !Pool {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, config: *const config_mod.Config, options: PoolOptions) !Pool {
         var pool = Pool{
+            .io = io,
             .allocator = allocator,
             .config = try config_mod.OwnedConfig.init(allocator, config),
             .options = options,
@@ -92,7 +94,7 @@ pub const Pool = struct {
         const cfg = pool.config.view();
         const conn = try pool.allocator.create(Conn);
         errdefer pool.allocator.destroy(conn);
-        conn.* = try Conn.init(pool.allocator, &cfg);
+        conn.* = try Conn.init(pool.io, pool.allocator, &cfg);
         return conn;
     }
 

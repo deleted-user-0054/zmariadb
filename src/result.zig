@@ -551,18 +551,22 @@ pub const TableTexts = struct {
         allocator.free(t.flattened);
     }
 
+    pub fn writeTo(t: *const TableTexts, writer: *std.Io.Writer) !void {
+        for (t.table, 0..) |row, i| {
+            try writer.print("row: {d} -> ", .{i});
+            try writer.print("|", .{});
+            for (row) |elem| {
+                try writer.print("{?s}", .{elem});
+                try writer.print("|", .{});
+            }
+            try writer.print("\n", .{});
+        }
+    }
+
     pub fn debugPrint(t: *const TableTexts) !void {
         var buffer: [1024]u8 = undefined;
         var w = std.fs.File.stdout().writer(&buffer).interface;
-        for (t.table, 0..) |row, i| {
-            try w.print("row: {d} -> ", .{i});
-            try w.print("|", .{});
-            for (row) |elem| {
-                try w.print("{?s}", .{elem});
-                try w.print("|", .{});
-            }
-            try w.print("\n", .{});
-        }
+        try t.writeTo(&w);
         try w.flush();
     }
 };
@@ -591,14 +595,18 @@ pub fn TableStructs(comptime Struct: type) type {
             t.struct_list.deinit(allocator);
         }
 
+        pub fn writeTo(t: *const TableStructs(Struct), writer: *std.Io.Writer) !void {
+            for (t.struct_list.items, 0..) |row, i| {
+                try writer.print("row: {any} -> ", .{i});
+                try writer.print("{any}", .{row});
+                try writer.print("\n", .{});
+            }
+        }
+
         pub fn debugPrint(t: *const TableStructs(Struct)) !void {
             var buffer: [1024]u8 = undefined;
             var w = std.fs.File.stdout().writer(&buffer).interface;
-            for (t.struct_list.items, 0..) |row, i| {
-                try w.print("row: {any} -> ", .{i});
-                try w.print("{any}", .{row});
-                try w.print("\n", .{});
-            }
+            try t.writeTo(&w);
             try w.flush();
         }
     };

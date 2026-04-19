@@ -64,12 +64,17 @@ or
 
 ### Connection
 ```zig
+const std = @import("std");
 const myzql = @import("myzql");
 const Conn = myzql.conn.Conn;
 
 pub fn main() !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
     // Setting up client
     var client = try Conn.init(
+        io,
         allocator,
         &.{
             .username = "some-user",   // default: "root"
@@ -101,7 +106,10 @@ try tx.commit();
 
 ### Connection Pooling
 ```zig
-var pool = try myzql.pool.Pool.init(allocator, &.{
+var threaded: std.Io.Threaded = .init_single_threaded;
+const io = threaded.io();
+
+var pool = try myzql.pool.Pool.init(io, allocator, &.{
     .username = "some-user",
     .password = "password123",
     .database = "customers",

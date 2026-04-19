@@ -53,19 +53,19 @@ fn querySingleOptionalText(client: anytype, query: []const u8) !?[]u8 {
 }
 
 test "ping" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
     try c.ping();
 }
 
 test "connect with database" {
-    var c = try Conn.init(std.testing.allocator, &test_config_with_db);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config_with_db);
     defer c.deinit(std.testing.allocator);
     try c.ping();
 }
 
 test "transaction commit and rollback" {
-    var c = try Conn.init(std.testing.allocator, &test_config_with_db);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config_with_db);
     defer c.deinit(std.testing.allocator);
 
     try queryExpectOk(&c, "DROP TEMPORARY TABLE IF EXISTS myzql_tx_test");
@@ -91,7 +91,7 @@ test "transaction commit and rollback" {
 }
 
 test "pool resets session state on release" {
-    var pool = try Pool.init(std.testing.allocator, &test_config_with_db, .{
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
         .max_connections = 1,
         .reset_on_release = true,
     });
@@ -117,10 +117,10 @@ test "reconnect before next command after disconnect" {
     var reconnect_config = test_config_with_db;
     reconnect_config.reconnect = .{ .enabled = true };
 
-    var victim = try Conn.init(std.testing.allocator, &reconnect_config);
+    var victim = try Conn.init(std.testing.io, std.testing.allocator, &reconnect_config);
     defer victim.deinit(std.testing.allocator);
 
-    var killer = try Conn.init(std.testing.allocator, &test_config_with_db);
+    var killer = try Conn.init(std.testing.io, std.testing.allocator, &test_config_with_db);
     defer killer.deinit(std.testing.allocator);
 
     const old_connection_id = try querySingleU64(&victim, "SELECT CONNECTION_ID()");
@@ -137,14 +137,14 @@ test "reconnect before next command after disconnect" {
 }
 
 test "query database create and drop" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
     try queryExpectOk(&c, "CREATE DATABASE testdb");
     try queryExpectOk(&c, "DROP DATABASE testdb");
 }
 
 test "query syntax error" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     const qr = try c.query("garbage query");
@@ -152,7 +152,7 @@ test "query syntax error" {
 }
 
 test "query text protocol" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     { // Iterating over rows and elements
@@ -198,7 +198,7 @@ test "query text protocol" {
 }
 
 test "prepare check" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
     { // prepare no execute
         const prep_res = try c.prepare(allocator, "CREATE TABLE default.testtable (id INT, name VARCHAR(255))");
@@ -221,7 +221,7 @@ test "prepare check" {
 }
 
 test "prepare execute - 1" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
     {
         const prep_res = try c.prepare(allocator, "CREATE DATABASE testdb");
@@ -240,7 +240,7 @@ test "prepare execute - 1" {
 }
 
 test "prepare execute - 2" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     const prep_res_1 = try c.prepare(allocator, "CREATE DATABASE testdb");
@@ -262,7 +262,7 @@ test "prepare execute - 2" {
 }
 
 test "prepare execute with result" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     {
@@ -344,7 +344,7 @@ test "prepare execute with result" {
 }
 
 test "prepare execute - first" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     {
@@ -392,7 +392,7 @@ test "prepare execute - first" {
 }
 
 test "binary data types - int" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     try queryExpectOk(&c, "CREATE DATABASE test");
@@ -536,7 +536,7 @@ test "binary data types - int" {
 }
 
 test "binary data types - float" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     try queryExpectOk(&c, "CREATE DATABASE test");
@@ -616,7 +616,7 @@ test "binary data types - float" {
 }
 
 test "binary data types - string" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     try queryExpectOk(&c, "CREATE DATABASE test");
@@ -723,7 +723,7 @@ test "binary data types - string" {
 }
 
 test "binary data types - array" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     try queryExpectOk(&c, "CREATE DATABASE test");
@@ -912,7 +912,7 @@ test "binary data types - array" {
 }
 
 test "binary data types - temporal" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     try queryExpectOk(&c, "CREATE DATABASE test");
@@ -1020,7 +1020,7 @@ test "binary data types - temporal" {
 }
 
 test "select concat with params" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     { // Select (Binary Protocol)
@@ -1041,7 +1041,7 @@ test "select concat with params" {
 
 // https://github.com/speed2exe/myzql/issues/27
 test "stress" {
-    var c = try Conn.init(std.testing.allocator, &test_config);
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config);
     defer c.deinit(std.testing.allocator);
 
     { // Select (Binary Protocol)

@@ -30,6 +30,7 @@ const ResultMeta = @import("./result_meta.zig").ResultMeta;
 /// Use `init` to establish a connection, and `deinit` to close it.
 /// A single `Conn` must not be used concurrently from multiple threads.
 pub const Conn = struct {
+    io: std.Io,
     connected: bool,
     stream: ?std.Io.net.Stream,
     reader: ?PacketReader,
@@ -49,8 +50,9 @@ pub const Conn = struct {
     /// Establish a connection to a MySQL/MariaDB server.
     /// Performs the TCP connection and authentication handshake.
     /// Caller must call `deinit` when done.
-    pub fn init(allocator: std.mem.Allocator, config: *const Config) !Conn {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, config: *const Config) !Conn {
         var conn = Conn{
+            .io = io,
             .connected = false,
             .stream = null,
             .reader = null,
@@ -301,17 +303,16 @@ pub const Conn = struct {
     fn connect(c: *Conn) !void {
         std.debug.assert(c.stream == null and c.reader == null and c.writer == null);
 
-        const io = std.Io.Threaded.global_single_threaded.io();
         const stream = switch (c.owned_config.address) {
-            .ip => |address| try address.connect(io, .{ .mode = .stream }),
-            .unix => |address| try address.connect(io),
+            .ip => |address| try address.connect(c.io, .{ .mode = .stream }),
+            .unix => |address| try address.connect(c.io),
         };
 
         c.stream = stream;
         errdefer c.cleanupTransport();
 
-        c.reader = try PacketReader.init(stream, io, c.allocator);
-        c.writer = try PacketWriter.init(stream, io, c.allocator);
+        c.reader = try PacketReader.init(stream, c.io, c.allocator);
+        c.writer = try PacketWriter.init(stream, c.io, c.allocator);
         c.connected = true;
         c.capabilities = 0;
         c.sequence_id = 0;
@@ -354,7 +355,7 @@ pub const Conn = struct {
     fn cleanupTransport(c: *Conn) void {
         const tx_was_active = c.inTransaction();
         if (c.stream) |stream| {
-            stream.close(std.Io.Threaded.global_single_threaded.io());
+            stream.close(c.io);
         }
         if (c.reader) |*reader| {
             reader.deinit();
@@ -438,7 +439,7 @@ pub const Conn = struct {
         const decoded_pk = try auth.decodePublicKey(pk_packet.payload, allocator);
         defer decoded_pk.deinit(allocator);
 
-        const enc_pw = try auth.encryptPassword(allocator, config.password, auth_data, &decoded_pk.value);
+        const enc_pw = try auth.encryptPassword(c.io, allocator, config.password, auth_data, &decoded_pk.value);
         defer allocator.free(enc_pw);
 
         try c.writeBytesAsPacket(enc_pw);
@@ -485,7 +486,7 @@ pub const Conn = struct {
                             const decoded_pk = try auth.decodePublicKey(pk_packet.payload, allocator);
                             defer decoded_pk.deinit(allocator);
 
-                            const enc_pw = try auth.encryptPassword(allocator, config.password, auth_data, &decoded_pk.value);
+                            const enc_pw = try auth.encryptPassword(c.io, allocator, config.password, auth_data, &decoded_pk.value);
                             defer allocator.free(enc_pw);
 
                             try c.writeBytesAsPacket(enc_pw);

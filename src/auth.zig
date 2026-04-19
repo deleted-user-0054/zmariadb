@@ -210,7 +210,7 @@ test "scrambleSHA256Password" {
 
 // https://mariadb.com/kb/en/sha256_password-plugin/#rsa-encrypted-password
 // RSA encrypted value of XOR(password, seed) using server public key (RSA_PKCS1_OAEP_PADDING).
-pub fn encryptPassword(allocator: std.mem.Allocator, password: []const u8, seed: *const [20]u8, pk: *const PublicKey) ![]const u8 {
+pub fn encryptPassword(io: std.Io, allocator: std.mem.Allocator, password: []const u8, seed: *const [20]u8, pk: *const PublicKey) ![]const u8 {
     const plain = blk: {
         var plain = try allocator.alloc(u8, password.len + 1);
         @memcpy(plain.ptr, password);
@@ -223,10 +223,10 @@ pub fn encryptPassword(allocator: std.mem.Allocator, password: []const u8, seed:
         c.* ^= seed[i % 20];
     }
 
-    return rsaEncryptOAEP(allocator, plain, pk);
+    return rsaEncryptOAEP(io, allocator, plain, pk);
 }
 
-fn rsaEncryptOAEP(allocator: std.mem.Allocator, msg: []const u8, pk: *const PublicKey) ![]const u8 {
+fn rsaEncryptOAEP(io: std.Io, allocator: std.mem.Allocator, msg: []const u8, pk: *const PublicKey) ![]const u8 {
     const init_hash = Sha1.init(.{});
 
     const lHash = blk: {
@@ -247,7 +247,7 @@ fn rsaEncryptOAEP(allocator: std.mem.Allocator, msg: []const u8, pk: *const Publ
     @memcpy(db[0..lHash.len], &lHash);
     db[db.len - msg.len - 1] = 1;
     @memcpy(db[db.len - msg.len ..], msg);
-    std.Io.Threaded.global_single_threaded.io().random(seed);
+    io.random(seed);
 
     mgf1XOR(db, &init_hash, seed);
     mgf1XOR(seed, &init_hash, db);
