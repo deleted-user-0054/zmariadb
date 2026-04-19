@@ -57,21 +57,12 @@ pub const PrepareOk = struct {
     }
 };
 
-pub const BinaryParam = struct {
-    type_and_flag: [2]u8, // LSB: type, MSB: flag
-    name: []const u8,
-    raw: ?[]const u8,
-};
-
 pub const ExecuteRequest = struct {
     prep_stmt: *const PreparedStatement,
 
-    capabilities: u32,
     flags: u8 = 0, // Cursor type
     iteration_count: u32 = 1, // Always 1
     new_params_bind_flag: u8 = 1,
-
-    // attributes: []const BinaryParam = &.{}, // Not supported yet
 
     pub fn writeWithParams(e: *const ExecuteRequest, writer: *PacketWriter, params: anytype) !void {
         try writer.writeInt(u8, constants.COM_STMT_EXECUTE);
@@ -85,23 +76,7 @@ pub const ExecuteRequest = struct {
             return error.ParamsCountNotMatch;
         }
 
-        // const has_attributes_to_write = (e.capabilities & constants.CLIENT_QUERY_ATTRIBUTES > 0) and e.attributes.len > 0;
-
-        // const param_count = params.len;
-        if (params.len > 0
-            //or has_attributes_to_write
-        ) {
-            // if (has_attributes_to_write) {
-            //     try packet_writer.writeLengthEncodedInteger(writer, e.attributes.len + param_count);
-            // }
-
-            // Write Null Bitmap
-            // if (has_attributes_to_write) {
-            //     try writeNullBitmap(params, e.attributes, writer);
-            // } else {
-            //     try writeNullBitmapWithAttrs(params, &.{}, writer);
-            // }
-
+        if (params.len > 0) {
             try writeNullBitmap(params, writer);
 
             // If a statement is re-executed without changing the params types,
@@ -123,21 +98,8 @@ pub const ExecuteRequest = struct {
                 };
                 try writer.writeInt(u8, sign_flag);
 
-                // Not supported yet
-                // if (e.capabilities & constants.CLIENT_QUERY_ATTRIBUTES > 0) {
-                //     try packet_writer.writeLengthEncodedString(writer, "");
-                // }
             }
 
-            // if (has_attributes_to_write) {
-            //     for (e.attributes) |b| {
-            //         try writer.write(&b.type_and_flag);
-            //         try packet_writer.writeLengthEncodedString(writer, b.name);
-            //     }
-            // }
-            // }
-
-            // TODO: Write params and attr as binary values
             // Write params as binary values
             inline for (params, enum_field_types) |param, enum_field_type| {
                 if (isNull(param)) {
@@ -146,12 +108,6 @@ pub const ExecuteRequest = struct {
                     try writeParamAsFieldType(writer, enum_field_type, param);
                 }
             }
-
-            // if (has_attributes_to_write) {
-            //     for (e.attributes) |b| {
-            //         try writeAttr(b, writer);
-            //     }
-            // }
         }
     }
 };
@@ -368,28 +324,6 @@ fn writeNullBitmap(params: anytype, writer: *PacketWriter) !void {
     }
 }
 
-fn writeNullBitmapWithAttrs(params: anytype, attributes: []const BinaryParam, writer: *PacketWriter) !void {
-    const byte_count = (params.len + attributes.len + 7) / 8;
-    for (0..byte_count) |i| {
-        const start = i * 8;
-        const end = (i + 1) * 8;
-
-        const byte: u8 = blk: {
-            if (params.len >= end) {
-                break :blk nullBitsParams(params, start);
-            } else if (start >= params.len) {
-                break :blk nullBitsAttrs(attributes[(start - params.len)..]);
-            } else {
-                break :blk nullBitsParamsAttrs(params, start, attributes);
-            }
-        };
-
-        // [1,1,1,1] [1,1,1]
-        // start = 0, end = 8
-        try writer.writeInt(u8, byte);
-    }
-}
-
 pub fn nullBitsParams(params: anytype, start: usize) u8 {
     var byte: u8 = 0;
 
@@ -409,43 +343,6 @@ pub fn nullBitsParams(params: anytype, start: usize) u8 {
     return byte;
 }
 
-pub fn nullBitsAttrs(attrs: []const BinaryParam) u8 {
-    const final_attrs = if (attrs.len > 8) attrs[0..8] else attrs;
-
-    var byte: u8 = 0;
-    var current_bit: u8 = 1;
-    for (final_attrs) |p| {
-        if (p.raw == null) {
-            byte |= current_bit;
-        }
-        current_bit <<= 1;
-    }
-    return byte;
-}
-
-pub fn nullBitsParamsAttrs(params: anytype, start: usize, attrs: []const BinaryParam) u8 {
-    const final_attributes = if (attrs.len > 8) attrs[0..8] else attrs;
-
-    var byte: u8 = 0;
-    var current_bit: u8 = 1;
-
-    inline for (params, 0..) |param, i| {
-        if (i >= start) {
-            if (isNull(param)) byte |= current_bit;
-            current_bit <<= 1;
-        }
-    }
-
-    for (final_attributes) |p| {
-        if (p.raw == null) {
-            byte |= current_bit;
-        }
-        current_bit <<= 1;
-    }
-
-    return byte;
-}
-
 inline fn isNull(param: anytype) bool {
     return comptime switch (@typeInfo(@TypeOf(param))) {
         inline .optional => if (param) |p| isNull(p) else true,
@@ -454,81 +351,23 @@ inline fn isNull(param: anytype) bool {
     };
 }
 
-fn nonNullBinaryParam() BinaryParam {
-    return .{
-        .type_and_flag = .{ 0x00, 0x00 },
-        .name = "foo",
-        .raw = "bar",
-    };
-}
-
-fn nullBinaryParam() BinaryParam {
-    return .{
-        .type_and_flag = .{ 0x00, 0x00 },
-        .name = "hello",
-        .raw = null,
-    };
-}
-
 test "writeNullBitmap" {
-    const some_param = nonNullBinaryParam();
-    const null_param = nullBinaryParam();
-
     const tests = .{
         .{
             .params = &.{1},
-            .attributes = &.{some_param},
             .expected = &[_]u8{0b00000000},
         },
         .{
             .params = &.{ null, @as(?u8, null) },
-            .attributes = &.{null_param},
-            .expected = &[_]u8{0b00000111},
+            .expected = &[_]u8{0b00000011},
         },
         .{
             .params = &.{ null, null, null, null, null, null, null, null },
-            .attributes = &.{},
             .expected = &[_]u8{0b11111111},
         },
         .{
             .params = &.{ null, null, null, null, null, null, null, null, null },
-            .attributes = &.{},
             .expected = &[_]u8{ 0b11111111, 0b00000001 },
-        },
-        .{
-            .params = &.{},
-            .attributes = &.{ null_param, null_param, null_param, null_param, null_param, null_param, null_param, null_param, null_param },
-            .expected = &[_]u8{ 0b11111111, 0b00000001 },
-        },
-        .{
-            .params = &.{},
-            .attributes = &.{ null_param, null_param, null_param, null_param, null_param, null_param, null_param, null_param },
-            .expected = &[_]u8{0b11111111},
-        },
-        .{
-            .params = &.{},
-            .attributes = &.{ null_param, null_param, null_param, null_param, null_param, null_param, null_param },
-            .expected = &[_]u8{0b01111111},
-        },
-        .{
-            .params = &.{ null, null, null, null, null, null, null, null },
-            .attributes = &.{null_param},
-            .expected = &[_]u8{ 0b11111111, 0b00000001 },
-        },
-        .{
-            .params = &.{ null, null, null, null, null, null, null },
-            .attributes = &.{ null_param, null_param },
-            .expected = &[_]u8{ 0b11111111, 0b00000001 },
-        },
-        .{
-            .params = &.{ null, null, null, null },
-            .attributes = &.{ null_param, null_param, null_param, null_param },
-            .expected = &[_]u8{0b11111111},
-        },
-        .{
-            .params = &.{ null, null, null, null, null, null, null, null, null },
-            .attributes = &.{ null_param, null_param },
-            .expected = &[_]u8{ 0b11111111, 0b00000111 },
         },
     };
 
@@ -539,12 +378,11 @@ test "writeNullBitmap" {
             .buf = &buf,
             .pos = 0,
             .stream = undefined,
+            .io = undefined,
             .allocator = std.testing.allocator,
         };
-        fake_packet_writer =
-            fake_packet_writer;
 
-        _ = try writeNullBitmapWithAttrs(t.params, t.attributes, &fake_packet_writer);
+        try writeNullBitmap(t.params, &fake_packet_writer);
         const written = buf[0..fake_packet_writer.pos];
         try std.testing.expectEqualSlices(u8, t.expected, written);
     }

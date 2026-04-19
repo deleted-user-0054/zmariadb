@@ -1,7 +1,6 @@
 const std = @import("std");
 const constants = @import("../constants.zig");
 const ErrorPacket = @import("./generic_response.zig").ErrorPacket;
-// const PacketReader = @import("./packet_reader.zig").PacketReader;
 
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_packets.html#sect_protocol_basic_packets_packet
 pub const Packet = struct {

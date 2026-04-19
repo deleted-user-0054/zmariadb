@@ -54,7 +54,6 @@ pub const CLIENT_SESSION_TRACK:                  u32 = 1 << 23;
 pub const CLIENT_DEPRECATE_EOF:                  u32 = 1 << 24;
 pub const CLIENT_OPTIONAL_RESULTSET_METADATA:    u32 = 1 << 25;
 pub const CLIENT_ZSTD_COMPRESSION_ALGORITHM:     u32 = 1 << 26;
-pub const CLIENT_QUERY_ATTRIBUTES:               u32 = 1 << 27;
 pub const CTOR_AUTHENTICATION:                   u32 = 1 << 28;
 pub const CLIENT_CAPABILITY_EXTENSION:           u32 = 1 << 29;
 

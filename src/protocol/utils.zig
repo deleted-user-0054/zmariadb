@@ -35,14 +35,6 @@ test "copy - dest length is longer" {
     try std.testing.expectEqualSlices(u8, "hello", dest[0..n]);
 }
 
-// dst.len >= src.len to ensure all data can be moved
-pub fn memMove(dst: []u8, src: []const u8) void {
-    std.debug.assert(dst.len >= src.len);
-    for (dst[0..src.len], src) |*d, s| {
-        d.* = s;
-    }
-}
-
 // 1 -> 1
 // 2 -> 2
 // 3 -> 4

@@ -267,7 +267,6 @@ pub const Conn = struct {
         std.debug.assert(prep_stmt.res_cols.len == 0);
         c.sequence_id = 0;
         const execute_request: ExecuteRequest = .{
-            .capabilities = c.capabilities,
             .prep_stmt = prep_stmt,
         };
         try c.writePacketWithParam(execute_request, params);
@@ -289,7 +288,6 @@ pub const Conn = struct {
         std.debug.assert(prep_stmt.res_cols.len > 0);
         c.sequence_id = 0;
         const execute_request: ExecuteRequest = .{
-            .capabilities = c.capabilities,
             .prep_stmt = prep_stmt,
         };
         try c.writePacketWithParam(execute_request, params);

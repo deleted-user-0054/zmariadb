@@ -4,14 +4,8 @@
 ## Status
 - Beta
 
-## Version Compatibility
-| MyZQL       | Zig                       |
-|-------------|---------------------------|
-| 0.0.9.1     | 0.12.0                    |
-| 0.13.2      | 0.13.0                    |
-| 0.14.0      | 0.14.0                    |
-| 0.15.1      | 0.15.1                    |
-| main        | 0.16.0                    |
+## Zig Support
+- Zig 0.16.0 only
 
 ## Features
 - Native Zig code, no external dependencies
@@ -34,19 +28,6 @@
 ### Fetch dependency
 ```bash
 zig fetch --save git+https://github.com/speed2exe/myzql#main
-```
-or
-- `build.zig.zon`
-```zon
-    // ...
-    .dependencies = .{
-      .myzql = .{
-        // choose a tag according to "Version Compatibility" table
-        .url = "https://github.com/speed2exe/myzql/archive/refs/tags/0.13.2.tar.gz",
-        .hash = "1220582ea45580eec6b16aa93d2a9404467db8bc1d911806d367513aa40f3817f84c",
-      }
-    },
-    // ...
 ```
 
 ### Import in your project
@@ -428,7 +409,12 @@ docker run --name some-mariadb --env MARIADB_ROOT_PASSWORD=password -p 3306:3306
 ```
 - Run all the test: In root directory of project:
 ```bash
-zig build -Dtest-filter="..." integration_test
+zig build integration_test
+```
+
+- If your test database is not on the default local port, pass build options such as:
+```bash
+zig build integration_test -Dtest-db-port=3307 -Dtest-db-user=root -Dtest-db-password=password -Dtest-db-name=mysql
 ```
 
 ## Philosophy
