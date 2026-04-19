@@ -42,6 +42,7 @@ zig fetch --save git+https://github.com/speed2exe/myzql#main
 
 ## Usage
 - Project integration example: [Usage](https://github.com/speed2exe/myzql-example)
+- README examples below focus on the stable high-level root API from `@import("myzql")`.
 
 ### Connection
 ```zig
@@ -142,7 +143,6 @@ pub fn main() !void {
 this is not the section, scroll down to "Executing prepared statements returning results" instead.
 ```zig
 const myzql = @import("myzql");
-const TextResultRow = myzql.TextResultRow;
 
 pub fn main() !void {
     const result = try c.queryRows(allocator, "SELECT * FROM customers.purchases");
@@ -153,7 +153,7 @@ pub fn main() !void {
 
     // Allocation-free iterator over rows
     const rows_iter = rows.iter();
-    while (try rows_iter.next()) |row| { // TextResultRow
+    while (try rows_iter.next()) |row| {
         // Option 1: Iterate through every element in the row
         var elems_iter = row.iter();
         while (elems_iter.next()) |elem| { // ?[]const u8
@@ -192,7 +192,6 @@ CREATE TABLE test.person (
 
 ```zig
 const myzql = @import("myzql");
-const PreparedStatement = myzql.PreparedStatement;
 
 pub fn main() !void {
     // In order to do a insertion, you would first need to do a prepared statement.
@@ -220,8 +219,6 @@ pub fn main() !void {
 
 ### Executing prepared statements returning results as structs
 ```zig
-const BinaryResultRow = myzql.BinaryResultRow;
-
 fn main() !void {
     const prep_res = try c.prepare(allocator, "SELECT name, age FROM test.person");
     defer prep_res.deinit(allocator);
@@ -238,24 +235,11 @@ fn main() !void {
         const rows = try query_res.expect(.rows);
         const rows_iter = rows.iter();
         while (try rows_iter.next()) |row| {
-            { // Option 1: scanning into preallocated person
-                var person: Person = undefined;
-                try row.scan(&person);
-                std.debug.print("person: {any}\n", .{person});
-                // Important: if any field is a string, it will be valid until the next row is scanned
-                // or next query. If your rows return have strings and you want to keep the data longer,
-                // use the method below instead.
-            }
-            { // Option 2: passing in allocator to create person
-                const person_ptr = try row.structCreate(Person, allocator);
-
-                // Important: please use BinaryResultRow.structDestroy
-                // to destroy the struct created by BinaryResultRow.structCreate
-                // if your struct contains strings.
-                // person is valid until BinaryResultRow.structDestroy is called.
-                defer BinaryResultRow.structDestroy(person_ptr, allocator);
-                std.debug.print("person: {any}\n", .{person_ptr.*});
-            }
+            var person: Person = undefined;
+            try row.scan(&person);
+            std.debug.print("person: {any}\n", .{person});
+            // Important: if any field is a string, it stays valid until the next row is scanned
+            // or the next query starts. Use `tableStructs` below if you need owned data.
         }
     }
 
@@ -412,9 +396,9 @@ zig build integration_test -Dtest-db-port=3307 -Dtest-db-user=root -Dtest-db-pas
 ## Philosophy
 ### Correctness
 Focused on correct representation of server client protocol.
-### Low-level and High-level APIs
-Low-level apis should contain all functionality you need.
-High-level apis are built on top of low-level ones for convenience and developer ergonomics.
+### Public API
+The documented API is the high-level root surface from `@import("myzql")`.
+Protocol internals and other lower-level implementation details are intentionally not covered here.
 
 ### Binary Column Types support
 - MySQL Colums Types to Zig Values
