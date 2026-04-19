@@ -47,7 +47,7 @@ zig fetch --save git+https://github.com/speed2exe/myzql#main
 ```zig
 const std = @import("std");
 const myzql = @import("myzql");
-const Conn = myzql.conn.Conn;
+const Conn = myzql.Conn;
 
 pub fn main() !void {
     var threaded: std.Io.Threaded = .init_single_threaded;
@@ -63,7 +63,7 @@ pub fn main() !void {
             .database = "customers",   // default: ""
 
             // Current default value.
-            .address = myzql.config.Address.localhost(3306),
+            .address = myzql.Address.localhost(3306),
             .reconnect = .{ .enabled = true },
             // ...
         },
@@ -90,7 +90,7 @@ try tx.commit();
 var threaded: std.Io.Threaded = .init_single_threaded;
 const io = threaded.io();
 
-var pool = try myzql.pool.Pool.init(io, allocator, &.{
+var pool = try myzql.Pool.init(io, allocator, &.{
     .username = "some-user",
     .password = "password123",
     .database = "customers",
@@ -110,7 +110,6 @@ _ = try query_res.expect(.rows);
 ## Querying
 ```zig
 
-const OkPacket = protocol.generic_response.OkPacket;
 
 pub fn main() !void {
     // ...
@@ -118,13 +117,13 @@ pub fn main() !void {
     const result = try client.query("CREATE DATABASE testdb");
 
     // Query results can have a few variant:
-    // - ok:   OkPacket     => query is ok
-    // - err:  ErrorPacket  => error occurred
+    // - ok:   success packet => query is ok
+    // - err:  error packet   => error occurred
     // In this example, res will either be `ok` or `err`.
     // We are using the convenient method `expect` for simplified error handling.
     // If the result variant does not match the kind of result you have specified,
     // a message will be printed and you will get an error instead.
-    const ok: OkPacket = try result.expect(.ok);
+    const ok = try result.expect(.ok);
 
     // Alternatively, you can also handle results manually for more control.
     // Here, we do a switch statement to handle all possible variant or results.
@@ -143,29 +142,26 @@ pub fn main() !void {
 this is not the section, scroll down to "Executing prepared statements returning results" instead.
 ```zig
 const myzql = @import("myzql");
-const ResultSet = myzql.result.ResultSet;
-const TextResultRow = myzql.result.TextResultRow;
-const TextElems = myzql.result.TextElems;
-const TextElemIter = myzql.result.TextElemIter;
+const TextResultRow = myzql.TextResultRow;
 
 pub fn main() !void {
     const result = try c.queryRows(allocator, "SELECT * FROM customers.purchases");
 
     // This is a query that returns rows, you have to collect the result.
-    // you can use `expect(.rows)` to try interpret query result as ResultSet(TextResultRow)
-    const rows: ResultSet(TextResultRow) = try result.expect(.rows);
+    // you can use `expect(.rows)` to interpret the query result as a row set
+    const rows = try result.expect(.rows);
 
     // Allocation-free iterator over rows
     const rows_iter = rows.iter();
     while (try rows_iter.next()) |row| { // TextResultRow
         // Option 1: Iterate through every element in the row
-        var elems_iter: TextElemIter = row.iter();
+        var elems_iter = row.iter();
         while (elems_iter.next()) |elem| { // ?[]const u8
             std.debug.print("{?s} ", .{elem});
         }
 
         // Option 2: Collect all elements in the row into a slice
-        const text_elems: TextElems = try row.textElems(allocator);
+        const text_elems = try row.textElems(allocator);
         defer text_elems.deinit(allocator); // elems are valid until deinit is called
         const elems: []const ?[]const u8 = text_elems.elems;
         std.debug.print("elems: {any}\n", .{elems});
@@ -178,7 +174,7 @@ pub fn main() !void {
     // Under the hood, it does network calls and allocations, until EOF or error.
     // Results are valid until `deinit` is called on TableTexts.
     const result = try c.queryRows(allocator, "SELECT * FROM customers.purchases");
-    const rows: ResultSet(TextResultRow) = try result.expect(.rows);
+    const rows = try result.expect(.rows);
     const table = try rows.tableTexts(allocator);
     defer table.deinit(allocator); // table is valid until deinit is called
     std.debug.print("table: {any}\n", .{table.table});
@@ -196,16 +192,14 @@ CREATE TABLE test.person (
 
 ```zig
 const myzql = @import("myzql");
-const QueryResult = myzql.result.QueryResult;
-const PreparedStatement = myzql.result.PreparedStatement;
-const OkPacket = myzql.protocol.generic_response.OkPacket;
+const PreparedStatement = myzql.PreparedStatement;
 
 pub fn main() !void {
     // In order to do a insertion, you would first need to do a prepared statement.
     // Allocation is required as we need to store metadata of parameters and return type
     const prep_res = try c.prepare(allocator, "INSERT INTO test.person (name, age) VALUES (?, ?)");
     defer prep_res.deinit(allocator);
-    const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+    const prep_stmt = try prep_res.expect(.stmt);
 
     // Data to be inserted
     const params = .{
@@ -214,7 +208,7 @@ pub fn main() !void {
     };
     inline for (params) |param| {
         const exe_res = try c.execute(&prep_stmt, param);
-        const ok: OkPacket = try exe_res.expect(.ok); // expecting ok here because there's no rows returned
+        const ok = try exe_res.expect(.ok); // expecting ok here because there's no rows returned
         const last_insert_id: u64 = ok.last_insert_id;
         std.debug.print("last_insert_id: {any}\n", .{last_insert_id});
     }
@@ -226,14 +220,12 @@ pub fn main() !void {
 
 ### Executing prepared statements returning results as structs
 ```zig
-const QueryResultRows = myzql.result.QueryResultRows;
-const BinaryResultRow = myzql.result.BinaryResultRow;
-const ResultSet = myzql.result.ResultSet;
+const BinaryResultRow = myzql.BinaryResultRow;
 
 fn main() !void {
     const prep_res = try c.prepare(allocator, "SELECT name, age FROM test.person");
     defer prep_res.deinit(allocator);
-    const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+    const prep_stmt = try prep_res.expect(.stmt);
 
     // This is the struct that represents the columns of a single row.
     const Person = struct {
@@ -243,7 +235,7 @@ fn main() !void {
 
     { // Iterating over rows, scanning into struct or creating struct
         const query_res = try c.executeRows(allocator, &prep_stmt, .{}); // no parameters because there's no ? in the query
-        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
+        const rows = try query_res.expect(.rows);
         const rows_iter = rows.iter();
         while (try rows_iter.next()) |row| {
             { // Option 1: scanning into preallocated person
@@ -269,7 +261,7 @@ fn main() !void {
 
     { // collect all rows into a table ([]const Person)
         const query_res = try c.executeRows(allocator, &prep_stmt, .{}); // no parameters because there's no ? in the query
-        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
+        const rows = try query_res.expect(.rows);
         const rows_iter = rows.iter();
         const person_structs = try rows_iter.tableStructs(Person, allocator);
         defer person_structs.deinit(allocator); // data is valid until deinit is called
@@ -291,14 +283,14 @@ CREATE TABLE test.temporal_types_example (
 
 ```zig
 
-const DateTime = myzql.temporal.DateTime;
-const Duration = myzql.temporal.Duration;
+const DateTime = myzql.DateTime;
+const Duration = myzql.Duration;
 
 fn main() !void {
     { // Insert
         const prep_res = try c.prepare(allocator, "INSERT INTO test.temporal_types_example VALUES (?, ?)");
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
 
         const my_time: DateTime = .{
             .year = 2023,
@@ -332,9 +324,9 @@ fn main() !void {
         };
         const prep_res = try c.prepare(allocator, "SELECT * FROM test.temporal_types_example");
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const structs = try rows_iter.tableStructs(DateTimeDuration, allocator);
@@ -359,7 +351,7 @@ fn main() !void {
     { // Insert
         const prep_res = try c.prepare(allocator, "INSERT INTO test.array_types_example VALUES (?, ?)");
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
 
         const params = .{
             .{ "John", &[_]u8 { 0xFE } ** 6 },
@@ -378,9 +370,9 @@ fn main() !void {
         };
         const prep_res = try c.prepare(allocator, "SELECT * FROM test.array_types_example");
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const structs = try rows_iter.tableStructs(Client, allocator);

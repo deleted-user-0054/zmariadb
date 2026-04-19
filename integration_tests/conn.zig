@@ -1,23 +1,16 @@
 const std = @import("std");
 const myzql = @import("myzql");
-const Conn = myzql.conn.Conn;
+const Conn = myzql.Conn;
 const test_config = @import("./config.zig").test_config;
 const test_config_with_db = @import("./config.zig").test_config_with_db;
 const allocator = std.testing.allocator;
-const ErrorPacket = myzql.protocol.generic_response.ErrorPacket;
 const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
-const DateTime = myzql.temporal.DateTime;
-const Duration = myzql.temporal.Duration;
-const ResultSet = myzql.result.ResultSet;
-const ResultRow = myzql.result.ResultRow;
-const BinaryResultRow = myzql.result.BinaryResultRow;
-const ResultRowIter = myzql.result.ResultRowIter;
-const TextResultRow = myzql.result.TextResultRow;
-const TextElemIter = myzql.result.TextElemIter;
-const TextElems = myzql.result.TextElems;
-const PreparedStatement = myzql.result.PreparedStatement;
-const Pool = myzql.pool.Pool;
+const DateTime = myzql.DateTime;
+const Duration = myzql.Duration;
+const BinaryResultRow = myzql.BinaryResultRow;
+const TextResultRow = myzql.TextResultRow;
+const Pool = myzql.Pool;
 
 // convenient function for testing
 fn queryExpectOk(c: *Conn, query: []const u8) !void {
@@ -33,7 +26,7 @@ fn queryExpectOkLogError(c: *Conn, query: []const u8) void {
 
 fn querySingleU64(client: anytype, query: []const u8) !u64 {
     const query_res = try client.queryRows(allocator, query);
-    const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+    const rows = try query_res.expect(.rows);
     const row = (try rows.first()) orelse return error.ExpectedRow;
     const elems = try row.textElems(allocator);
     defer elems.deinit(allocator);
@@ -42,7 +35,7 @@ fn querySingleU64(client: anytype, query: []const u8) !u64 {
 
 fn querySingleOptionalText(client: anytype, query: []const u8) !?[]u8 {
     const query_res = try client.queryRows(allocator, query);
-    const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+    const rows = try query_res.expect(.rows);
     const row = (try rows.first()) orelse return error.ExpectedRow;
     const elems = try row.textElems(allocator);
     defer elems.deinit(allocator);
@@ -158,10 +151,10 @@ test "query text protocol" {
     { // Iterating over rows and elements
         const query_res = try c.queryRows(std.testing.allocator, "SELECT 1");
 
-        const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
-        const rows_iter: ResultRowIter(TextResultRow) = rows.iter();
+        const rows = try query_res.expect(.rows);
+        const rows_iter = rows.iter();
         while (try rows_iter.next()) |row| { // ResultRow(TextResultRow)
-            var elems_iter: TextElemIter = row.iter();
+            var elems_iter = row.iter();
             while (elems_iter.next()) |elem| { // ?[] const u8
                 try std.testing.expectEqualDeep(@as(?[]const u8, "1"), elem);
             }
@@ -169,10 +162,10 @@ test "query text protocol" {
     }
     { // Iterating over rows, collecting elements into []const ?[]const u8
         const query_res = try c.queryRows(std.testing.allocator, "SELECT 3, 4, null, 6, 7");
-        const rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
-        const rows_iter: ResultRowIter(TextResultRow) = rows.iter();
+        const rows = try query_res.expect(.rows);
+        const rows_iter = rows.iter();
         while (try rows_iter.next()) |row| {
-            const elems: TextElems = try row.textElems(allocator);
+            const elems = try row.textElems(allocator);
             defer elems.deinit(allocator);
 
             try std.testing.expectEqualDeep(
@@ -183,7 +176,7 @@ test "query text protocol" {
     }
     { // Iterating over rows, collecting elements into []const []const ?[]const u8
         const query_res = try c.queryRows(std.testing.allocator, "SELECT 8,9 UNION ALL SELECT 10,11");
-        var rows: ResultSet(TextResultRow) = try query_res.expect(.rows);
+        var rows = try query_res.expect(.rows);
         var table = try rows.tableTexts(allocator);
         defer table.deinit(allocator);
 
@@ -226,14 +219,14 @@ test "prepare execute - 1" {
     {
         const prep_res = try c.prepare(allocator, "CREATE DATABASE testdb");
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
         const query_res = try c.execute(&prep_stmt, .{});
         _ = try query_res.expect(.ok);
     }
     {
         const prep_res = try c.prepare(allocator, "DROP DATABASE testdb");
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
         const query_res = try c.execute(&prep_stmt, .{});
         _ = try query_res.expect(.ok);
     }
@@ -245,11 +238,11 @@ test "prepare execute - 2" {
 
     const prep_res_1 = try c.prepare(allocator, "CREATE DATABASE testdb");
     defer prep_res_1.deinit(allocator);
-    const prep_stmt_1: PreparedStatement = try prep_res_1.expect(.stmt);
+    const prep_stmt_1 = try prep_res_1.expect(.stmt);
 
     const prep_res_2 = try c.prepare(allocator, "DROP DATABASE testdb");
     defer prep_res_2.deinit(allocator);
-    const prep_stmt_2: PreparedStatement = try prep_res_2.expect(.stmt);
+    const prep_stmt_2 = try prep_res_2.expect(.stmt);
 
     {
         const query_res = try c.execute(&prep_stmt_1, .{});
@@ -271,9 +264,9 @@ test "prepare execute with result" {
         ;
         const prep_res = try c.prepare(allocator, query);
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
         const query_res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
+        const rows = try query_res.expect(.rows);
 
         const MyType = struct {
             a: ?u8,
@@ -305,8 +298,8 @@ test "prepare execute with result" {
         { // Dummy query to test for invalid memory reuse
             const query_res2 = try c.queryRows(std.testing.allocator, "SELECT 3, 4, null, 6, 7");
 
-            const rows2: ResultSet(TextResultRow) = try query_res2.expect(.rows);
-            const rows_iter2: ResultRowIter(TextResultRow) = rows2.iter();
+            const rows2 = try query_res2.expect(.rows);
+            const rows_iter2 = rows2.iter();
             while (try rows_iter2.next()) |row| {
                 _ = row;
             }
@@ -322,9 +315,9 @@ test "prepare execute with result" {
         ;
         const prep_res = try c.prepare(allocator, query);
         defer prep_res.deinit(allocator);
-        const prep_stmt: PreparedStatement = try prep_res.expect(.stmt);
+        const prep_stmt = try prep_res.expect(.stmt);
         const query_res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try query_res.expect(.rows);
+        const rows = try query_res.expect(.rows);
         const rows_iter = rows.iter();
 
         const MyType = struct {
@@ -440,7 +433,7 @@ test "binary data types - int" {
 
     { // Select (Text Protocol)
         const res = try c.queryRows(std.testing.allocator, "SELECT * FROM test.int_types_example");
-        var rows: ResultSet(TextResultRow) = try res.expect(.rows);
+        var rows = try res.expect(.rows);
 
         var table_texts = try rows.tableTexts(allocator);
         defer table_texts.deinit(allocator);
@@ -476,7 +469,7 @@ test "binary data types - int" {
         defer prep_res.deinit(allocator);
         const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
 
         const expected: []const IntTypesExample = &.{
             .{
@@ -573,7 +566,7 @@ test "binary data types - float" {
 
     { // Text Protocol
         const res = try c.queryRows(std.testing.allocator, "SELECT * FROM test.float_types_example");
-        var rows: ResultSet(TextResultRow) = try res.expect(.rows);
+        var rows = try res.expect(.rows);
         var table_texts = try rows.tableTexts(allocator);
         defer table_texts.deinit(allocator);
 
@@ -600,7 +593,7 @@ test "binary data types - float" {
         defer prep_res.deinit(allocator);
         const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const row_iter = rows.iter();
 
         const expected: []const FloatTypesExample = &.{
@@ -658,7 +651,7 @@ test "binary data types - string" {
 
     { // Text Protocol
         const res = try c.queryRows(std.testing.allocator, "SELECT * FROM test.string_types_example");
-        var rows: ResultSet(TextResultRow) = try res.expect(.rows);
+        var rows = try res.expect(.rows);
 
         var table_texts = try rows.tableTexts(allocator);
         defer table_texts.deinit(allocator);
@@ -686,7 +679,7 @@ test "binary data types - string" {
         defer prep_res.deinit(allocator);
         const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const expected: []const StringTypesExample = &.{
@@ -765,7 +758,7 @@ test "binary data types - array" {
 
     { // Text Protocol
         const res = try c.queryRows(std.testing.allocator, "SELECT * FROM test.array_types_example");
-        var rows: ResultSet(TextResultRow) = try res.expect(.rows);
+        var rows = try res.expect(.rows);
 
         var table_texts = try rows.tableTexts(allocator);
         defer table_texts.deinit(allocator);
@@ -807,7 +800,7 @@ test "binary data types - array" {
         const prep_stmt = try prep_res.expect(.stmt);
         {
             const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-            const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+            const rows = try res.expect(.rows);
             const rows_iter = rows.iter();
 
             const expected: []const ArrayTypesExample = &.{
@@ -833,7 +826,7 @@ test "binary data types - array" {
 
         {
             const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-            const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+            const rows = try res.expect(.rows);
             const rows_iter = rows.iter();
 
             const expected_shorts: []const Short = &.{
@@ -859,7 +852,7 @@ test "binary data types - array" {
 
         {
             const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-            const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+            const rows = try res.expect(.rows);
             const rows_iter = rows.iter();
 
             const expected_sentinels: []const Sentinel = &.{
@@ -885,7 +878,7 @@ test "binary data types - array" {
 
         {
             const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-            const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+            const rows = try res.expect(.rows);
             const rows_iter = rows.iter();
 
             const expected_longs: []const Long = &.{
@@ -956,7 +949,7 @@ test "binary data types - temporal" {
 
     { // Text Protocol
         const res = try c.queryRows(std.testing.allocator, "SELECT * FROM test.temporal_types_example");
-        var rows: ResultSet(TextResultRow) = try res.expect(.rows);
+        var rows = try res.expect(.rows);
 
         var table_texts = try rows.tableTexts(allocator);
         defer table_texts.deinit(allocator);
@@ -983,7 +976,7 @@ test "binary data types - temporal" {
         defer prep_res.deinit(allocator);
         const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const expected: []const TemporalTypesExample = &.{
@@ -1028,7 +1021,7 @@ test "select concat with params" {
         defer prep_res.deinit(allocator);
         const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{ runtimeValue("hello"), runtimeValue("world") });
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const Result = struct { col1: []const u8 };
@@ -1106,7 +1099,7 @@ test "stress" {
         defer prep_res.deinit(allocator);
         const prep_stmt = try prep_res.expect(.stmt);
         const res = try c.executeRows(std.testing.allocator, &prep_stmt, .{});
-        const rows: ResultSet(BinaryResultRow) = try res.expect(.rows);
+        const rows = try res.expect(.rows);
         const rows_iter = rows.iter();
 
         const Result = struct { a: u64, b: u64, c: u64, d: u64, e: u64, f: u64 };
