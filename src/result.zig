@@ -320,6 +320,9 @@ pub fn ResultRow(comptime T: type) type {
                     const ok = OkPacket.init(&packet, conn.capabilities);
                     conn.rememberOkPacket(ok);
                     conn.setActiveResultSet(false);
+                    if (conn.hasMoreResults()) {
+                        try conn.drainRemainingResults();
+                    }
                     break :blk .{ .ok = ok };
                 },
                 else => .{ .row = .{ .packet = packet, .col_defs = col_defs } },
@@ -369,6 +372,9 @@ fn collectAllRowsPacketUntilEof(conn: *Conn, allocator: std.mem.Allocator) !std.
             constants.EOF => {
                 conn.rememberOkPacket(OkPacket.init(&packet, conn.capabilities));
                 conn.setActiveResultSet(false);
+                if (conn.hasMoreResults()) {
+                    try conn.drainRemainingResults();
+                }
                 return packet_list;
             },
             else => {

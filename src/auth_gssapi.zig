@@ -4,6 +4,10 @@ const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
 const c = if (is_windows)
     @cImport({
+        // Work around Zig 0.16 + MinGW fortified wrapper generation in ReleaseSafe
+        // that can emit unused local extern stubs for wide-char helpers.
+        @cDefine("_FORTIFY_SOURCE", "0");
+        @cDefine("__MINGW_FORTIFY_LEVEL", "0");
         @cDefine("SECURITY_WIN32", "1");
         @cInclude("windows.h");
         @cInclude("sspi.h");

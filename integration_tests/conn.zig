@@ -105,6 +105,63 @@ test "transaction savepoint rollback and release" {
     try std.testing.expectEqual(@as(u64, 2), try querySingleU64(&c, "SELECT COUNT(*) FROM myzql_tx_savepoint_test"));
 }
 
+test "multi statements query drains trailing results" {
+    var cfg = test_config_with_db;
+    cfg.multi_statements = true;
+
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &cfg);
+    defer c.deinit(std.testing.allocator);
+
+    _ = try (try c.query("SET @myzql_multi_q = 7; SET @myzql_multi_q = 8")).expect(.ok);
+    try std.testing.expectEqual(@as(u64, 8), try querySingleU64(&c, "SELECT @myzql_multi_q"));
+}
+
+test "multi statements queryRows drains trailing statement results" {
+    var cfg = test_config_with_db;
+    cfg.multi_statements = true;
+
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &cfg);
+    defer c.deinit(std.testing.allocator);
+
+    const query_res = try c.queryRows(allocator, "SELECT 1 AS v UNION ALL SELECT 2; SET @myzql_multi_rows = 5");
+    const rows = try query_res.expect(.rows);
+    const rows_iter = rows.iter();
+
+    var sum: u64 = 0;
+    while (try rows_iter.next()) |row| {
+        const elems = try row.textElems(allocator);
+        defer elems.deinit(allocator);
+        sum += try std.fmt.parseUnsigned(u64, elems.elems[0] orelse return error.ExpectedValue, 10);
+    }
+    try std.testing.expectEqual(@as(u64, 3), sum);
+    try std.testing.expectEqual(@as(u64, 5), try querySingleU64(&c, "SELECT @myzql_multi_rows"));
+}
+
+test "multi statements surfaces trailing statement errors and keeps connection usable" {
+    var cfg = test_config_with_db;
+    cfg.multi_statements = true;
+
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &cfg);
+    defer c.deinit(std.testing.allocator);
+
+    try std.testing.expectError(
+        error.ErrorPacket,
+        c.query("SET @myzql_multi_err = 11; SELECT * FROM myzql_missing_table_9d90a9f3"),
+    );
+    try std.testing.expectEqual(@as(u64, 11), try querySingleU64(&c, "SELECT @myzql_multi_err"));
+
+    const rows_res = try c.queryRows(allocator, "SELECT 1; SELECT * FROM myzql_missing_table_9d90a9f3");
+    const rows = try rows_res.expect(.rows);
+    const rows_iter = rows.iter();
+    const first = (try rows_iter.next()) orelse return error.ExpectedRow;
+    const first_elems = try first.textElems(allocator);
+    defer first_elems.deinit(allocator);
+    try std.testing.expectEqualStrings("1", first_elems.elems[0] orelse return error.ExpectedValue);
+    try std.testing.expectError(error.ErrorPacket, rows_iter.next());
+
+    try std.testing.expectEqual(@as(u64, 2), try querySingleU64(&c, "SELECT 2"));
+}
+
 test "pool resets session state on release" {
     var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
         .max_connections = 1,

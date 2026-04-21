@@ -26,7 +26,7 @@
 - Supported authentication plugins are `mysql_native_password`, `sha256_password`, and `caching_sha2_password`
 - Authentication plugin switch requests are handled for `mysql_native_password`, `mysql_clear_password`, `sha256_password`, `caching_sha2_password`, and Windows SSPI `auth_gssapi_client`
 - `auth_gssapi_client` currently requires Windows SSPI and links against `secur32`; non-Windows GSSAPI clients are not implemented yet
-- `Config.multi_statements` is reserved for future work and currently returns `error.UnsupportedMultiStatements`
+- `Config.multi_statements` enables multi-statement `COM_QUERY`; high-level APIs currently return the first result and drain trailing result sets
 
 ## TODOs
 - Config from URL

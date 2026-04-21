@@ -16,15 +16,18 @@ pub const TEXT_RESULT_ROW_NULL: u8 = 0xFB;
 // https://dev.mysql.com/doc/dev/mysql-server/latest/mysql__com_8h.html
 pub const SERVER_STATUS_IN_TRANS:             u16 = 1 << 0;
 pub const SERVER_STATUS_AUTOCOMMIT:           u16 = 1 << 1;
-pub const SERVER_MORE_RESULTS_EXISTS:         u16 = 1 << 2;
-pub const SERVER_QUERY_NO_GOOD_INDEX_USED:    u16 = 1 << 3;
-pub const SERVER_STATUS_CURSOR_EXISTS:        u16 = 1 << 4;
-pub const SERVER_STATUS_LAST_ROW_SENT:        u16 = 1 << 5;
-pub const SERVER_STATUS_DB_DROPPED:           u16 = 1 << 6;
-pub const SERVER_STATUS_NO_BACKSLASH_ESCAPES: u16 = 1 << 7;
-pub const SERVER_QUERY_WAS_SLOW:              u16 = 1 << 8;
-pub const SERVER_STATUS_IN_TRANS_READONLY:    u16 = 1 << 9;
-pub const SERVER_SESSION_STATE_CHANGED:       u16 = 1 << 10;
+pub const SERVER_MORE_RESULTS_EXISTS:         u16 = 1 << 3;
+pub const SERVER_QUERY_NO_GOOD_INDEX_USED:    u16 = 1 << 4;
+pub const SERVER_QUERY_NO_INDEX_USED:         u16 = 1 << 5;
+pub const SERVER_STATUS_CURSOR_EXISTS:        u16 = 1 << 6;
+pub const SERVER_STATUS_LAST_ROW_SENT:        u16 = 1 << 7;
+pub const SERVER_STATUS_DB_DROPPED:           u16 = 1 << 8;
+pub const SERVER_STATUS_NO_BACKSLASH_ESCAPES: u16 = 1 << 9;
+pub const SERVER_STATUS_METADATA_CHANGED:     u16 = 1 << 10;
+pub const SERVER_QUERY_WAS_SLOW:              u16 = 1 << 11;
+pub const SERVER_PS_OUT_PARAMS:               u16 = 1 << 12;
+pub const SERVER_STATUS_IN_TRANS_READONLY:    u16 = 1 << 13;
+pub const SERVER_SESSION_STATE_CHANGED:       u16 = 1 << 14;
 
 // https://dev.mysql.com/doc/dev/mysql-server/latest/group__group__cs__capabilities__flags.html
 pub const CLIENT_LONG_PASSWORD:   u32 = 1;

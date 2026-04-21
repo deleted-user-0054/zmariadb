@@ -37,8 +37,7 @@ pub const Config = struct {
 
     /// Return number of matching rows instead of rows changed. Default: false
     client_found_rows: bool = false,
-    /// Reserved for future support of multi-result COM_QUERY handling.
-    /// This is not implemented yet and enabling it returns `error.UnsupportedMultiStatements`.
+    /// Enable `COM_QUERY` multi-statements (`stmt1; stmt2; ...`) and multi-results.
     multi_statements: bool = false,
     /// Reconnect dead sessions after a communication failure, before a later command. Default: disabled.
     reconnect: ReconnectPolicy = .{},
@@ -59,13 +58,15 @@ pub const Config = struct {
         if (config.database.len > 0) {
             flags |= constants.CLIENT_CONNECT_WITH_DB;
         }
+        if (config.multi_statements) {
+            flags |= constants.CLIENT_MULTI_STATEMENTS;
+            flags |= constants.CLIENT_MULTI_RESULTS;
+        }
         return flags;
     }
 
     pub fn validate(config: *const Config) !void {
-        if (config.multi_statements) {
-            return error.UnsupportedMultiStatements;
-        }
+        _ = config;
     }
 };
 
@@ -123,10 +124,14 @@ pub const OwnedConfig = struct {
     }
 };
 
-test "Config rejects unsupported multi statements" {
+test "Config enables multi statement capability flags" {
     const cfg: Config = .{
         .multi_statements = true,
     };
 
-    try std.testing.expectError(error.UnsupportedMultiStatements, OwnedConfig.init(std.testing.allocator, &cfg));
+    const flags = cfg.capability_flags();
+    try std.testing.expect(flags & constants.CLIENT_MULTI_STATEMENTS != 0);
+    try std.testing.expect(flags & constants.CLIENT_MULTI_RESULTS != 0);
+    var owned = try OwnedConfig.init(std.testing.allocator, &cfg);
+    defer owned.deinit(std.testing.allocator);
 }

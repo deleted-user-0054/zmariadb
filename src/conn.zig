@@ -171,6 +171,63 @@ pub const Conn = struct {
         }
     }
 
+    pub fn hasMoreResults(c: *const Conn) bool {
+        return c.status_flags & constants.SERVER_MORE_RESULTS_EXISTS != 0;
+    }
+
+    /// Drain any additional result sets left by a multi-statement COM_QUERY.
+    pub fn drainRemainingResults(c: *Conn) !void {
+        while (c.hasMoreResults()) {
+            const packet = c.readPacket() catch |err| {
+                c.closeDueToCommunicationFailure();
+                return err;
+            };
+            c.drainResultFromFirstPacket(&packet) catch |err| switch (err) {
+                error.ErrorPacket => return err,
+                error.UnsupportedLocalInfileRequest => {
+                    c.closeDueToFatalProtocolError();
+                    return err;
+                },
+                else => {
+                    c.closeDueToCommunicationFailure();
+                    return err;
+                },
+            };
+        }
+        c.active_result_set = false;
+    }
+
+    fn drainResultFromFirstPacket(c: *Conn, first_packet: *const Packet) !void {
+        switch (first_packet.payload[0]) {
+            constants.OK => c.rememberOkPacket(OkPacket.init(first_packet, c.capabilities)),
+            constants.ERR => return first_packet.asError(),
+            constants.LOCAL_INFILE_REQUEST => return error.UnsupportedLocalInfileRequest,
+            else => {
+                var reader = first_packet.reader();
+                const n_columns = reader.readLengthEncodedInteger();
+                std.debug.assert(reader.finished());
+
+                try c.readPutResultColumns(c.allocator, n_columns);
+                c.active_result_set = true;
+                while (true) {
+                    const row_packet = try c.readPacket();
+                    switch (row_packet.payload[0]) {
+                        constants.ERR => {
+                            c.active_result_set = false;
+                            return row_packet.asError();
+                        },
+                        constants.EOF => {
+                            c.rememberOkPacket(OkPacket.init(&row_packet, c.capabilities));
+                            c.active_result_set = false;
+                            break;
+                        },
+                        else => {},
+                    }
+                }
+            },
+        }
+    }
+
     pub fn setActiveResultSet(c: *Conn, active: bool) void {
         c.active_result_set = active;
     }
@@ -296,6 +353,9 @@ pub const Conn = struct {
             constants.OK => {
                 c.rememberOkPacket(OkPacket.init(&packet, c.capabilities));
                 c.active_result_set = false;
+                if (c.hasMoreResults()) {
+                    try c.drainRemainingResults();
+                }
             },
             constants.ERR => return packet.asError(),
             constants.LOCAL_INFILE_REQUEST => {
@@ -731,6 +791,9 @@ pub const Conn = struct {
         };
         if (res == .ok) {
             c.rememberOkPacket(res.ok);
+            if (c.hasMoreResults()) {
+                try c.drainRemainingResults();
+            }
         }
         c.active_result_set = false;
         return res;
