@@ -13,6 +13,14 @@ pub const Address = union(enum) {
 pub const ReconnectPolicy = struct {
     enabled: bool = false,
     max_attempts: u8 = 1,
+    /// Delay between reconnect attempts after a failure. Default: 0 (no delay).
+    retry_delay_ms: u32 = 0,
+    /// Multiplier applied to delay after each failed reconnect attempt. 0 is treated as 1.
+    retry_backoff_multiplier: u8 = 1,
+    /// Upper bound for retry delay. 0 means no cap.
+    max_retry_delay_ms: u32 = 0,
+    /// Random delay added to each retry sleep in [0, jitter_ms]. 0 disables jitter.
+    jitter_ms: u16 = 0,
 };
 
 /// Configuration for a MySQL/MariaDB connection.
@@ -29,7 +37,8 @@ pub const Config = struct {
 
     /// Return number of matching rows instead of rows changed. Default: false
     client_found_rows: bool = false,
-    /// Allow multiple statements in a single query. Default: false
+    /// Reserved for future support of multi-result COM_QUERY handling.
+    /// This is not implemented yet and enabling it returns `error.UnsupportedMultiStatements`.
     multi_statements: bool = false,
     /// Reconnect dead sessions after a communication failure, before a later command. Default: disabled.
     reconnect: ReconnectPolicy = .{},
@@ -47,13 +56,16 @@ pub const Config = struct {
         if (config.client_found_rows) {
             flags |= constants.CLIENT_FOUND_ROWS;
         }
-        if (config.multi_statements) {
-            flags |= constants.CLIENT_MULTI_STATEMENTS;
-        }
         if (config.database.len > 0) {
             flags |= constants.CLIENT_CONNECT_WITH_DB;
         }
         return flags;
+    }
+
+    pub fn validate(config: *const Config) !void {
+        if (config.multi_statements) {
+            return error.UnsupportedMultiStatements;
+        }
     }
 };
 
@@ -68,6 +80,8 @@ pub const OwnedConfig = struct {
     reconnect: ReconnectPolicy,
 
     pub fn init(allocator: std.mem.Allocator, config: *const Config) !OwnedConfig {
+        try config.validate();
+
         const username = try allocator.dupeZ(u8, config.username);
         errdefer allocator.free(username);
 
@@ -108,3 +122,11 @@ pub const OwnedConfig = struct {
         };
     }
 };
+
+test "Config rejects unsupported multi statements" {
+    const cfg: Config = .{
+        .multi_statements = true,
+    };
+
+    try std.testing.expectError(error.UnsupportedMultiStatements, OwnedConfig.init(std.testing.allocator, &cfg));
+}

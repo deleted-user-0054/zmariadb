@@ -6,7 +6,10 @@ pub fn build(b: *std.Build) void {
 
     const myzql = b.addModule("myzql", .{
         .root_source_file = b.path("./src/myzql.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    linkPlatformLibraries(myzql, target);
 
     // -Dtest-filter="..."
     const test_filter = b.option([]const []const u8, "test-filter", "Filter for tests to run");
@@ -19,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    linkPlatformLibraries(unit_tests.root_module, target);
     if (test_filter) |t| unit_tests.filters = t;
 
     // zig build [install]
@@ -42,6 +46,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    linkPlatformLibraries(integration_tests.root_module, target);
     const integration_test_options = b.addOptions();
     integration_test_options.addOption(u16, "db_port", integration_test_db_port);
     integration_test_options.addOption([]const u8, "db_user", integration_test_db_user);
@@ -58,4 +63,11 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     const integration_test_step = b.step("integration_test", "Run integration tests");
     integration_test_step.dependOn(&run_integration_tests.step);
+}
+
+fn linkPlatformLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag == .windows) {
+        module.link_libc = true;
+        module.linkSystemLibrary("secur32", .{});
+    }
 }

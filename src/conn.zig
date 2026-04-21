@@ -1,15 +1,18 @@
 const std = @import("std");
 
 const auth = @import("./auth.zig");
+const auth_gssapi = @import("./auth_gssapi.zig");
 const config_mod = @import("./config.zig");
 const Config = config_mod.Config;
 const OwnedConfig = config_mod.OwnedConfig;
+const ReconnectPolicy = config_mod.ReconnectPolicy;
 const constants = @import("./constants.zig");
 const protocol = @import("./protocol.zig");
 const HandshakeV10 = protocol.handshake_v10.HandshakeV10;
 const ErrorPacket = protocol.generic_response.ErrorPacket;
 const OkPacket = protocol.generic_response.OkPacket;
 const HandshakeResponse41 = protocol.handshake_response.HandshakeResponse41;
+const AuthSwitchRequest = protocol.auth_switch_request.AuthSwitchRequest;
 const QueryRequest = protocol.text_command.QueryRequest;
 const prepared_statements = protocol.prepared_statements;
 const PrepareRequest = prepared_statements.PrepareRequest;
@@ -100,14 +103,43 @@ pub const Conn = struct {
         if (c.transaction_state_lost) return error.TransactionLost;
 
         const max_attempts: u8 = @max(@as(u8, 1), c.owned_config.reconnect.max_attempts);
+        var retry_delay_ms = clampReconnectDelayMs(c.owned_config.reconnect.retry_delay_ms, &c.owned_config.reconnect);
         var attempt: u8 = 0;
         while (attempt < max_attempts) : (attempt += 1) {
             c.connect() catch |err| {
                 if (attempt + 1 >= max_attempts) return err;
+                const sleep_ms = try reconnectSleepDelayMs(c.io, retry_delay_ms, &c.owned_config.reconnect);
+                if (sleep_ms > 0) {
+                    try std.Io.sleep(c.io, std.Io.Duration.fromMilliseconds(@intCast(sleep_ms)), .awake);
+                }
+                retry_delay_ms = nextReconnectDelayMs(retry_delay_ms, &c.owned_config.reconnect);
                 continue;
             };
             return;
         }
+    }
+
+    fn reconnectSleepDelayMs(io: std.Io, base_delay_ms: u32, policy: *const ReconnectPolicy) !u32 {
+        if (policy.jitter_ms == 0) return base_delay_ms;
+
+        var random_bytes: [2]u8 = undefined;
+        io.random(&random_bytes);
+        const random = std.mem.readInt(u16, &random_bytes, .little);
+        const jitter = @as(u32, random % (policy.jitter_ms + 1));
+        return base_delay_ms +% jitter;
+    }
+
+    fn clampReconnectDelayMs(delay_ms: u32, policy: *const ReconnectPolicy) u32 {
+        if (policy.max_retry_delay_ms > 0 and delay_ms > policy.max_retry_delay_ms) {
+            return policy.max_retry_delay_ms;
+        }
+        return delay_ms;
+    }
+
+    fn nextReconnectDelayMs(current_delay_ms: u32, policy: *const ReconnectPolicy) u32 {
+        const multiplier: u32 = @max(@as(u32, 1), policy.retry_backoff_multiplier);
+        const scaled = std.math.mul(u32, current_delay_ms, multiplier) catch std.math.maxInt(u32);
+        return clampReconnectDelayMs(scaled, policy);
     }
 
     /// Return true when the server session is currently in a transaction.
@@ -245,6 +277,46 @@ pub const Conn = struct {
         return c.queryRowsResult(TextResultRow, allocator);
     }
 
+    /// Run a health-check query and fully consume any result set it returns.
+    /// Accepts both statement-style responses (`OK`) and row-producing responses.
+    pub fn healthCheckQuery(c: *Conn, allocator: std.mem.Allocator, query_string: []const u8) !void {
+        try c.ensureReady();
+        const query_req: QueryRequest = .{ .query = query_string };
+        try c.writePacket(query_req);
+        c.writer.?.flush() catch |err| {
+            c.closeDueToCommunicationFailure();
+            return err;
+        };
+        const packet = c.readPacket() catch |err| {
+            c.closeDueToCommunicationFailure();
+            return err;
+        };
+
+        switch (packet.payload[0]) {
+            constants.OK => {
+                c.rememberOkPacket(OkPacket.init(&packet, c.capabilities));
+                c.active_result_set = false;
+            },
+            constants.ERR => return packet.asError(),
+            constants.LOCAL_INFILE_REQUEST => {
+                c.closeDueToFatalProtocolError();
+                return error.UnsupportedLocalInfileRequest;
+            },
+            else => {
+                var rows = result.ResultSet(TextResultRow).init(c, allocator, &packet) catch |err| {
+                    c.closeDueToCommunicationFailure();
+                    return err;
+                };
+                c.active_result_set = true;
+                rows.drain() catch |err| {
+                    c.closeDueToCommunicationFailure();
+                    return err;
+                };
+                c.active_result_set = false;
+            },
+        }
+    }
+
     /// Prepare a SQL statement for execution.
     pub fn prepare(c: *Conn, allocator: std.mem.Allocator, query_string: []const u8) !PrepareResult {
         try c.ensureReady();
@@ -339,7 +411,7 @@ pub const Conn = struct {
 
         switch (auth_plugin) {
             .caching_sha2_password => try c.auth_caching_sha2_password(c.allocator, &auth_data, &config),
-            .mysql_native_password => try c.auth_mysql_native_password(&auth_data, &config),
+            .mysql_native_password => try c.auth_mysql_native_password(c.allocator, &auth_data, &config),
             .sha256_password => try c.auth_sha256_password(c.allocator, &auth_data, &config),
             else => {
                 std.log.warn("Unsupported auth plugin: {any}\n", .{auth_plugin});
@@ -408,97 +480,216 @@ pub const Conn = struct {
         return packet.asError();
     }
 
-    fn auth_mysql_native_password(c: *Conn, auth_data: *const [20]u8, config: *const Config) !void {
-        const auth_resp = auth.scramblePassword(auth_data, config.password);
-        const response = HandshakeResponse41.init(.mysql_native_password, config, if (config.password.len > 0) &auth_resp else &[_]u8{});
-        try c.writePacket(response);
+    fn authPluginData20(plugin_data: []const u8) ![20]u8 {
+        const trimmed_len = std.mem.indexOfScalar(u8, plugin_data, 0) orelse plugin_data.len;
+        if (trimmed_len > 20) {
+            return error.InvalidAuthPluginData;
+        }
+
+        var auth_data = [_]u8{0} ** 20;
+        @memcpy(auth_data[0..trimmed_len], plugin_data[0..trimmed_len]);
+        return auth_data;
+    }
+
+    fn clearPasswordBytes(allocator: std.mem.Allocator, password: []const u8) ![]u8 {
+        const bytes = try allocator.alloc(u8, password.len + 1);
+        @memcpy(bytes[0..password.len], password);
+        bytes[password.len] = 0;
+        return bytes;
+    }
+
+    fn flushAndReadPacket(c: *Conn) !Packet {
         c.writer.?.flush() catch |err| {
             c.closeDueToCommunicationFailure();
             return err;
         };
+        return c.readPacket() catch |err| {
+            c.closeDueToCommunicationFailure();
+            return err;
+        };
+    }
 
-        const packet = try c.readPacket();
+    fn writeAuthPacketAndRead(c: *Conn, payload: []const u8) !Packet {
+        try c.writeBytesAsPacket(payload);
+        return c.flushAndReadPacket();
+    }
+
+    fn readNextAuthPacket(c: *Conn, payload: []const u8) !Packet {
+        if (payload.len != 0) {
+            return c.writeAuthPacketAndRead(payload);
+        }
+        return c.readPacket() catch |err| {
+            c.closeDueToCommunicationFailure();
+            return err;
+        };
+    }
+
+    fn finishAuthPacket(c: *Conn, allocator: std.mem.Allocator, packet: *const Packet, config: *const Config) anyerror!void {
         return switch (packet.payload[0]) {
-            constants.OK => c.rememberOkPacket(OkPacket.init(&packet, c.capabilities)),
+            constants.OK => c.rememberOkPacket(OkPacket.init(packet, c.capabilities)),
+            constants.AUTH_SWITCH => c.authSwitch(allocator, AuthSwitchRequest.initFromPacket(packet), config),
             else => packet.asError(),
         };
     }
 
-    fn auth_sha256_password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, config: *const Config) !void {
-        const response = HandshakeResponse41.init(.sha256_password, config, &[_]u8{auth.sha256_password_public_key_request});
-        try c.writePacket(response);
-        c.writer.?.flush() catch |err| {
-            c.closeDueToCommunicationFailure();
-            return err;
-        };
+    fn continueSha256Password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, packet: *const Packet, config: *const Config) anyerror!void {
+        switch (packet.payload[0]) {
+            constants.OK, constants.ERR, constants.AUTH_SWITCH => return c.finishAuthPacket(allocator, packet, config),
+            else => {},
+        }
 
-        const pk_packet = try c.readPacket();
-
-        const decoded_pk = try auth.decodePublicKey(pk_packet.payload, allocator);
+        const decoded_pk = try auth.decodePublicKey(packet.payload, allocator);
         defer decoded_pk.deinit(allocator);
 
         const enc_pw = try auth.encryptPassword(c.io, allocator, config.password, auth_data, &decoded_pk.value);
         defer allocator.free(enc_pw);
 
-        try c.writeBytesAsPacket(enc_pw);
-        c.writer.?.flush() catch |err| {
-            c.closeDueToCommunicationFailure();
-            return err;
-        };
+        const resp_packet = try c.writeAuthPacketAndRead(enc_pw);
+        return c.finishAuthPacket(allocator, &resp_packet, config);
+    }
 
-        const resp_packet = try c.readPacket();
-        return switch (resp_packet.payload[0]) {
-            constants.OK => c.rememberOkPacket(OkPacket.init(&resp_packet, c.capabilities)),
-            else => resp_packet.asError(),
+    fn continueCachingSha2Password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, packet: *const Packet, config: *const Config) anyerror!void {
+        switch (packet.payload[0]) {
+            constants.OK, constants.ERR, constants.AUTH_SWITCH => return c.finishAuthPacket(allocator, packet, config),
+            constants.AUTH_MORE_DATA => {
+                const more_data = packet.payload[1..];
+                if (more_data.len == 0) return error.UnsupportedCachingSha2PasswordMoreData;
+
+                switch (more_data[0]) {
+                    auth.caching_sha2_password_fast_auth_success => {
+                        const ok_packet = try c.readPacket();
+                        return c.finishAuthPacket(allocator, &ok_packet, config);
+                    },
+                    auth.caching_sha2_password_full_authentication_start => {
+                        const pk_packet = try c.writeAuthPacketAndRead(&[_]u8{auth.caching_sha2_password_public_key_request});
+                        const decoded_pk = try auth.decodePublicKey(pk_packet.payload, allocator);
+                        defer decoded_pk.deinit(allocator);
+
+                        const enc_pw = try auth.encryptPassword(c.io, allocator, config.password, auth_data, &decoded_pk.value);
+                        defer allocator.free(enc_pw);
+
+                        const resp_packet = try c.writeAuthPacketAndRead(enc_pw);
+                        return c.finishAuthPacket(allocator, &resp_packet, config);
+                    },
+                    else => return error.UnsupportedCachingSha2PasswordMoreData,
+                }
+            },
+            else => return packet.asError(),
+        }
+    }
+
+    fn auth_gssapi_client(c: *Conn, allocator: std.mem.Allocator, plugin_data: []const u8, config: *const Config) anyerror!void {
+        var session = try auth_gssapi.Session.init(allocator, plugin_data);
+        defer session.deinit();
+
+        var step = try session.nextToken(null);
+        var packet = try c.readNextAuthPacket(step.token);
+
+        while (true) {
+            const server_token = switch (packet.payload[0]) {
+                constants.OK, constants.ERR, constants.AUTH_SWITCH => return c.finishAuthPacket(allocator, &packet, config),
+                else => try gssapiServerToken(packet.payload),
+            };
+
+            if (!step.continue_needed) {
+                std.log.err("auth_gssapi_client received trailing token after SSPI completion", .{});
+                return error.UnexpectedGssapiServerToken;
+            }
+            if (server_token.len == 0) return error.InvalidAuthPluginData;
+
+            step = try session.nextToken(server_token);
+            packet = try c.readNextAuthPacket(step.token);
+        }
+    }
+
+    fn gssapiServerToken(payload: []const u8) ![]const u8 {
+        if (payload.len == 0) return error.InvalidAuthPluginData;
+        return switch (payload[0]) {
+            constants.AUTH_MORE_DATA => if (payload.len > 1) payload[1..] else error.InvalidAuthPluginData,
+            else => payload,
         };
     }
 
-    fn auth_caching_sha2_password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, config: *const Config) !void {
-        const auth_resp = auth.scrambleSHA256Password(auth_data, config.password);
-        const response = HandshakeResponse41.init(.caching_sha2_password, config, &auth_resp);
-        try c.writePacket(&response);
-        c.writer.?.flush() catch |err| {
-            c.closeDueToCommunicationFailure();
-            return err;
-        };
+    fn authSwitch(c: *Conn, allocator: std.mem.Allocator, request: AuthSwitchRequest, config: *const Config) anyerror!void {
+        const plugin = auth.AuthPlugin.fromName(request.plugin_name);
+        switch (plugin) {
+            .mysql_native_password => {
+                const auth_data = try authPluginData20(request.plugin_data);
+                const auth_resp = auth.scramblePassword(&auth_data, config.password);
+                const packet = try c.writeAuthPacketAndRead(if (config.password.len > 0) &auth_resp else &[_]u8{});
+                return c.finishAuthPacket(allocator, &packet, config);
+            },
+            .mysql_clear_password => {
+                const clear_pw = try clearPasswordBytes(allocator, config.password);
+                defer allocator.free(clear_pw);
 
-        while (true) {
-            const packet = try c.readPacket();
-            switch (packet.payload[0]) {
-                constants.OK => {
-                    c.rememberOkPacket(OkPacket.init(&packet, c.capabilities));
-                    return;
-                },
-                constants.AUTH_MORE_DATA => {
-                    const more_data = packet.payload[1..];
-                    switch (more_data[0]) {
-                        auth.caching_sha2_password_fast_auth_success => {},
-                        auth.caching_sha2_password_full_authentication_start => {
-                            try c.writeBytesAsPacket(&[_]u8{auth.caching_sha2_password_public_key_request});
-                            c.writer.?.flush() catch |err| {
-                                c.closeDueToCommunicationFailure();
-                                return err;
-                            };
-                            const pk_packet = try c.readPacket();
+                const packet = try c.writeAuthPacketAndRead(clear_pw);
+                return c.finishAuthPacket(allocator, &packet, config);
+            },
+            .sha256_password => {
+                const auth_data = try authPluginData20(request.plugin_data);
+                if (config.password.len == 0) {
+                    const packet = try c.writeAuthPacketAndRead(&[_]u8{0});
+                    return c.finishAuthPacket(allocator, &packet, config);
+                }
 
-                            const decoded_pk = try auth.decodePublicKey(pk_packet.payload, allocator);
-                            defer decoded_pk.deinit(allocator);
-
-                            const enc_pw = try auth.encryptPassword(c.io, allocator, config.password, auth_data, &decoded_pk.value);
-                            defer allocator.free(enc_pw);
-
-                            try c.writeBytesAsPacket(enc_pw);
-                            c.writer.?.flush() catch |err| {
-                                c.closeDueToCommunicationFailure();
-                                return err;
-                            };
-                        },
-                        else => return error.UnsupportedCachingSha2PasswordMoreData,
+                const pk_packet = try c.writeAuthPacketAndRead(&[_]u8{auth.sha256_password_public_key_request});
+                return c.continueSha256Password(allocator, &auth_data, &pk_packet, config);
+            },
+            .caching_sha2_password => {
+                const auth_data = try authPluginData20(request.plugin_data);
+                const packet = blk: {
+                    if (config.password.len == 0) {
+                        break :blk try c.writeAuthPacketAndRead(&[_]u8{});
                     }
-                },
-                else => return packet.asError(),
-            }
+
+                    const auth_resp = auth.scrambleSHA256Password(&auth_data, config.password);
+                    break :blk try c.writeAuthPacketAndRead(&auth_resp);
+                };
+                return c.continueCachingSha2Password(allocator, &auth_data, &packet, config);
+            },
+            .auth_gssapi_client => return c.auth_gssapi_client(allocator, request.plugin_data, config),
+            else => {
+                std.log.warn("Unsupported auth switch plugin: {s}\n", .{request.plugin_name});
+                return error.UnsupportedAuthPlugin;
+            },
         }
+    }
+
+    fn auth_mysql_native_password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, config: *const Config) !void {
+        const auth_resp = auth.scramblePassword(auth_data, config.password);
+        const response = HandshakeResponse41.init(.mysql_native_password, config, if (config.password.len > 0) &auth_resp else &[_]u8{});
+        try c.writePacket(response);
+        const packet = try c.flushAndReadPacket();
+        return c.finishAuthPacket(allocator, &packet, config);
+    }
+
+    fn auth_sha256_password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, config: *const Config) !void {
+        const initial_response = if (config.password.len == 0)
+            HandshakeResponse41.init(.sha256_password, config, &[_]u8{})
+        else
+            HandshakeResponse41.init(.sha256_password, config, &[_]u8{auth.sha256_password_public_key_request});
+        try c.writePacket(initial_response);
+        const packet = try c.flushAndReadPacket();
+
+        if (config.password.len == 0) {
+            return c.finishAuthPacket(allocator, &packet, config);
+        }
+        return c.continueSha256Password(allocator, auth_data, &packet, config);
+    }
+
+    fn auth_caching_sha2_password(c: *Conn, allocator: std.mem.Allocator, auth_data: *const [20]u8, config: *const Config) !void {
+        const response = blk: {
+            if (config.password.len == 0) {
+                break :blk HandshakeResponse41.init(.caching_sha2_password, config, &[_]u8{});
+            }
+
+            const auth_resp = auth.scrambleSHA256Password(auth_data, config.password);
+            break :blk HandshakeResponse41.init(.caching_sha2_password, config, &auth_resp);
+        };
+        try c.writePacket(&response);
+        const packet = try c.flushAndReadPacket();
+        return c.continueCachingSha2Password(allocator, auth_data, &packet, config);
     }
 
     pub inline fn readPacket(c: *Conn) !Packet {
@@ -609,6 +800,52 @@ pub const Tx = struct {
         tx.active = false;
     }
 
+    /// Create a savepoint inside the current transaction.
+    pub fn savepoint(tx: *Tx, name: []const u8) !void {
+        try tx.validate();
+        try validateSavepointName(name);
+        const sql = try std.fmt.allocPrint(tx.conn.allocator, "SAVEPOINT {s}", .{name});
+        defer tx.conn.allocator.free(sql);
+        const query_res = try tx.conn.query(sql);
+        _ = try query_res.expect(.ok);
+    }
+
+    /// Roll back to a previously created savepoint.
+    pub fn rollbackToSavepoint(tx: *Tx, name: []const u8) !void {
+        try tx.validate();
+        try validateSavepointName(name);
+        const sql = try std.fmt.allocPrint(tx.conn.allocator, "ROLLBACK TO SAVEPOINT {s}", .{name});
+        defer tx.conn.allocator.free(sql);
+        const query_res = try tx.conn.query(sql);
+        _ = try query_res.expect(.ok);
+    }
+
+    /// Release a previously created savepoint.
+    pub fn releaseSavepoint(tx: *Tx, name: []const u8) !void {
+        try tx.validate();
+        try validateSavepointName(name);
+        const sql = try std.fmt.allocPrint(tx.conn.allocator, "RELEASE SAVEPOINT {s}", .{name});
+        defer tx.conn.allocator.free(sql);
+        const query_res = try tx.conn.query(sql);
+        _ = try query_res.expect(.ok);
+    }
+
+    fn validateSavepointName(name: []const u8) !void {
+        if (name.len == 0) return error.InvalidSavepointName;
+        if (!isIdentifierStart(name[0])) return error.InvalidSavepointName;
+        for (name[1..]) |ch| {
+            if (!isIdentifierPart(ch)) return error.InvalidSavepointName;
+        }
+    }
+
+    fn isIdentifierStart(ch: u8) bool {
+        return (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or ch == '_';
+    }
+
+    fn isIdentifierPart(ch: u8) bool {
+        return isIdentifierStart(ch) or (ch >= '0' and ch <= '9') or ch == '$';
+    }
+
     pub fn query(tx: *Tx, sql: []const u8) !QueryResult {
         try tx.validate();
         return tx.conn.query(sql);
@@ -634,3 +871,47 @@ pub const Tx = struct {
         return tx.conn.executeRows(allocator, prep_stmt, params);
     }
 };
+
+test "authPluginData20 trims switch terminator" {
+    const auth_data = try Conn.authPluginData20("12345678901234567890\x00");
+    try std.testing.expectEqualDeep("12345678901234567890".*, auth_data);
+}
+
+test "authPluginData20 rejects oversized seed" {
+    try std.testing.expectError(error.InvalidAuthPluginData, Conn.authPluginData20("123456789012345678901"));
+}
+
+test "gssapiServerToken strips auth more data marker" {
+    const token = try Conn.gssapiServerToken(&[_]u8{ constants.AUTH_MORE_DATA, 0x4e, 0x54 });
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x4e, 0x54 }, token);
+}
+
+test "gssapiServerToken rejects empty auth more data payload" {
+    try std.testing.expectError(error.InvalidAuthPluginData, Conn.gssapiServerToken(&[_]u8{constants.AUTH_MORE_DATA}));
+}
+
+test "reconnect delay scaling and clamp" {
+    const policy: ReconnectPolicy = .{
+        .enabled = true,
+        .retry_backoff_multiplier = 2,
+        .max_retry_delay_ms = 250,
+    };
+    try std.testing.expectEqual(@as(u32, 200), Conn.nextReconnectDelayMs(100, &policy));
+    try std.testing.expectEqual(@as(u32, 250), Conn.nextReconnectDelayMs(200, &policy));
+}
+
+test "reconnect delay uses multiplier 1 when zero is configured" {
+    const policy: ReconnectPolicy = .{
+        .enabled = true,
+        .retry_backoff_multiplier = 0,
+    };
+    try std.testing.expectEqual(@as(u32, 123), Conn.nextReconnectDelayMs(123, &policy));
+}
+
+test "savepoint name validation" {
+    try Tx.validateSavepointName("sp1");
+    try Tx.validateSavepointName("_sp$1");
+    try std.testing.expectError(error.InvalidSavepointName, Tx.validateSavepointName(""));
+    try std.testing.expectError(error.InvalidSavepointName, Tx.validateSavepointName("1sp"));
+    try std.testing.expectError(error.InvalidSavepointName, Tx.validateSavepointName("sp-name"));
+}

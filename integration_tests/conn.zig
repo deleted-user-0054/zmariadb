@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const myzql = @import("myzql");
 const Conn = myzql.Conn;
 const test_config = @import("./config.zig").test_config;
@@ -83,6 +84,27 @@ test "transaction commit and rollback" {
     try std.testing.expectEqual(@as(u64, 1), try querySingleU64(&c, "SELECT COUNT(*) FROM myzql_tx_test"));
 }
 
+test "transaction savepoint rollback and release" {
+    var c = try Conn.init(std.testing.io, std.testing.allocator, &test_config_with_db);
+    defer c.deinit(std.testing.allocator);
+
+    try queryExpectOk(&c, "DROP TEMPORARY TABLE IF EXISTS myzql_tx_savepoint_test");
+    try queryExpectOk(&c, "CREATE TEMPORARY TABLE myzql_tx_savepoint_test (id INT)");
+
+    var tx = try c.begin();
+    defer tx.deinit();
+    _ = try (try tx.query("INSERT INTO myzql_tx_savepoint_test VALUES (1)")).expect(.ok);
+    try tx.savepoint("sp1");
+    _ = try (try tx.query("INSERT INTO myzql_tx_savepoint_test VALUES (2)")).expect(.ok);
+    try tx.savepoint("sp2");
+    _ = try (try tx.query("INSERT INTO myzql_tx_savepoint_test VALUES (3)")).expect(.ok);
+    try tx.rollbackToSavepoint("sp2");
+    try tx.releaseSavepoint("sp1");
+    try tx.commit();
+
+    try std.testing.expectEqual(@as(u64, 2), try querySingleU64(&c, "SELECT COUNT(*) FROM myzql_tx_savepoint_test"));
+}
+
 test "pool resets session state on release" {
     var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
         .max_connections = 1,
@@ -106,9 +128,180 @@ test "pool resets session state on release" {
     }
 }
 
+test "pool health check query applies statement on acquire" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .reset_on_release = false,
+        .health_check_query = "SET @myzql_health_check = 1",
+    });
+    defer pool.deinit();
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+
+        const current = try querySingleOptionalText(&lease, "SELECT @myzql_health_check");
+        defer if (current) |v| allocator.free(v);
+        try std.testing.expect(current != null);
+        try std.testing.expectEqualStrings("1", current.?);
+
+        _ = try (try lease.query("SET @myzql_health_check = 999")).expect(.ok);
+    }
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        const current = try querySingleOptionalText(&lease, "SELECT @myzql_health_check");
+        defer if (current) |v| allocator.free(v);
+        try std.testing.expect(current != null);
+        try std.testing.expectEqualStrings("1", current.?);
+    }
+}
+
+test "pool health check query supports row results" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .health_check_query = "SELECT 1",
+    });
+    defer pool.deinit();
+
+    var lease = try pool.acquire();
+    defer lease.deinit();
+    try std.testing.expectEqual(@as(u64, 2), try querySingleU64(&lease, "SELECT 2"));
+}
+
+test "pool stats snapshot counts requests and timeout" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .acquire_timeout_ms = 30,
+        .acquire_retry_interval_ms = 10,
+    });
+    defer pool.deinit();
+
+    var lease = try pool.acquire();
+    defer lease.deinit();
+
+    try std.testing.expectError(error.AcquireTimeout, pool.acquire());
+
+    const stats = pool.statsSnapshot();
+    try std.testing.expectEqual(@as(u64, 2), stats.acquire_requests);
+    try std.testing.expectEqual(@as(u64, 1), stats.acquire_success);
+    try std.testing.expectEqual(@as(u64, 1), stats.acquire_timeouts);
+    try std.testing.expect(stats.acquire_waits > 0);
+    try std.testing.expect(stats.connections_created >= 1);
+}
+
+test "pool stats snapshot tracks immediate exhaustion" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .acquire_timeout_ms = 0,
+    });
+    defer pool.deinit();
+
+    var lease = try pool.acquire();
+    defer lease.deinit();
+
+    try std.testing.expectError(error.PoolExhausted, pool.acquire());
+
+    const stats = pool.statsSnapshot();
+    try std.testing.expectEqual(@as(u64, 2), stats.acquire_requests);
+    try std.testing.expectEqual(@as(u64, 1), stats.acquire_success);
+    try std.testing.expectEqual(@as(u64, 1), stats.acquire_exhausted_immediate);
+}
+
+test "pool acquire timeout when exhausted" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .acquire_timeout_ms = 50,
+        .acquire_retry_interval_ms = 10,
+    });
+    defer pool.deinit();
+
+    var lease = try pool.acquire();
+    defer lease.deinit();
+    try std.testing.expectError(error.AcquireTimeout, pool.acquire());
+}
+
+test "pool acquire returns exhausted when wait is disabled" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+    });
+    defer pool.deinit();
+
+    var lease = try pool.acquire();
+    defer lease.deinit();
+    try std.testing.expectError(error.PoolExhausted, pool.acquire());
+}
+
+test "pool retires idle connections by max_idle_ms" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .reset_on_release = false,
+        .max_idle_ms = 20,
+    });
+    defer pool.deinit();
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        _ = try (try lease.query("SET @myzql_idle_retire = 1")).expect(.ok);
+    }
+
+    try std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(40), .awake);
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        const value = try querySingleOptionalText(&lease, "SELECT @myzql_idle_retire");
+        defer if (value) |v| allocator.free(v);
+        try std.testing.expectEqual(@as(?[]u8, null), value);
+    }
+}
+
+test "pool retires old connections by max_lifetime_ms" {
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, &test_config_with_db, .{
+        .max_connections = 1,
+        .reset_on_release = false,
+        .max_lifetime_ms = 20,
+    });
+    defer pool.deinit();
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        _ = try (try lease.query("SET @myzql_lifetime_retire = 1")).expect(.ok);
+    }
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        const value = try querySingleOptionalText(&lease, "SELECT @myzql_lifetime_retire");
+        defer if (value) |v| allocator.free(v);
+        try std.testing.expect(value != null);
+        try std.testing.expectEqualStrings("1", value.?);
+    }
+
+    try std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(40), .awake);
+
+    {
+        var lease = try pool.acquire();
+        defer lease.deinit();
+        const value = try querySingleOptionalText(&lease, "SELECT @myzql_lifetime_retire");
+        defer if (value) |v| allocator.free(v);
+        try std.testing.expectEqual(@as(?[]u8, null), value);
+    }
+}
+
 test "reconnect before next command after disconnect" {
     var reconnect_config = test_config_with_db;
-    reconnect_config.reconnect = .{ .enabled = true };
+    reconnect_config.reconnect = .{
+        .enabled = true,
+        .max_attempts = 3,
+        .retry_delay_ms = 2,
+        .retry_backoff_multiplier = 2,
+        .max_retry_delay_ms = 10,
+        .jitter_ms = 1,
+    };
 
     var victim = try Conn.init(std.testing.io, std.testing.allocator, &reconnect_config);
     defer victim.deinit(std.testing.allocator);
@@ -121,8 +314,20 @@ test "reconnect before next command after disconnect" {
     defer allocator.free(kill_sql);
     try queryExpectOk(&killer, kill_sql);
 
-    _ = victim.ping() catch {};
-    try std.testing.expect(!victim.connected);
+    if (builtin.os.tag == .windows) {
+        // Zig std on Windows can panic on LOCAL_DISCONNECT when probing a killed socket.
+        // Mark the session disconnected and verify reconnect on the next command.
+        if (victim.stream) |stream| stream.close(std.testing.io);
+        if (victim.reader) |*reader| reader.deinit();
+        if (victim.writer) |*writer| writer.deinit();
+        victim.stream = null;
+        victim.reader = null;
+        victim.writer = null;
+        victim.connected = false;
+    } else {
+        _ = victim.ping() catch {};
+        try std.testing.expect(!victim.connected);
+    }
 
     try victim.ping();
     const new_connection_id = try querySingleU64(&victim, "SELECT CONNECTION_ID()");

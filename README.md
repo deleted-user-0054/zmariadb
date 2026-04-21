@@ -11,6 +11,7 @@
 - Native Zig code, no external dependencies
 - TCP protocol
 - Transactions
+- Savepoints inside transactions
 - Connection Pooling
 - Automatic reconnect for dead sessions after a communication failure, before a later command (not inside a lost transaction)
 - Prepared Statement
@@ -20,6 +21,12 @@
 
 ## Requirements
 - MySQL/MariaDB 5.7.5 and up
+
+## Current Limitations
+- Supported authentication plugins are `mysql_native_password`, `sha256_password`, and `caching_sha2_password`
+- Authentication plugin switch requests are handled for `mysql_native_password`, `mysql_clear_password`, `sha256_password`, `caching_sha2_password`, and Windows SSPI `auth_gssapi_client`
+- `auth_gssapi_client` currently requires Windows SSPI and links against `secur32`; non-Windows GSSAPI clients are not implemented yet
+- `Config.multi_statements` is reserved for future work and currently returns `error.UnsupportedMultiStatements`
 
 ## TODOs
 - Config from URL
@@ -65,7 +72,14 @@ pub fn main() !void {
 
             // Current default value.
             .address = myzql.Address.localhost(3306),
-            .reconnect = .{ .enabled = true },
+            .reconnect = .{
+                .enabled = true,
+                .max_attempts = 3,
+                .retry_delay_ms = 100,
+                .retry_backoff_multiplier = 2,
+                .max_retry_delay_ms = 2_000,
+                .jitter_ms = 25,
+            },
             // ...
         },
     );
@@ -98,6 +112,19 @@ var pool = try myzql.Pool.init(io, allocator, &.{
     .reconnect = .{ .enabled = true },
 }, .{ .max_connections = 8 });
 defer pool.deinit();
+
+// Optional pool waiting behavior when all connections are busy:
+// .{
+//     .max_connections = 8,
+//     .acquire_timeout_ms = 500,
+//     .acquire_retry_interval_ms = 10,
+//     .max_lifetime_ms = 30_000,
+//     .max_idle_ms = 10_000,
+//     .health_check_query = "SELECT 1",
+// }
+
+const pool_stats = pool.statsSnapshot();
+// pool_stats.acquire_requests / acquire_timeouts / connections_discarded / ...
 
 var lease = try pool.acquire();
 defer lease.deinit();

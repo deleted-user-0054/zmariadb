@@ -13,6 +13,7 @@ pub const Tx = conn_mod.Tx;
 
 pub const Pool = pool_mod.Pool;
 pub const PoolOptions = pool_mod.PoolOptions;
+pub const PoolStats = pool_mod.PoolStats;
 
 pub const QueryResult = result_mod.QueryResult;
 pub const PrepareResult = result_mod.PrepareResult;

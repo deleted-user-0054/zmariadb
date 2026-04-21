@@ -11,6 +11,7 @@ pub const AuthPlugin = enum {
     sha256_password,
     caching_sha2_password,
     mysql_clear_password,
+    auth_gssapi_client,
     unknown,
 
     pub fn fromName(name: []const u8) AuthPlugin {
@@ -162,8 +163,6 @@ test "scramblePassword" {
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_caching_sha2_authentication_exchanges.html
 // XOR(SHA256(password), SHA256(SHA256(SHA256(password)), scramble))
 pub fn scrambleSHA256Password(scramble: []const u8, password: []const u8) [32]u8 {
-    std.debug.assert(password.len > 0);
-
     var message1 = blk: { // SHA256(password)
         var hasher = Sha256.init(.{});
         hasher.update(password);
